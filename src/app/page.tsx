@@ -9,40 +9,29 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { useToast } from '@/hooks/use-toast'
 
-// Voice configurations with names
-const VOICE_CONFIGS = {
-  female: [
-    { id: 'emma', name: 'Emma', description: 'Warm & Friendly', accent: 'American', pitch: 1.0 },
-    { id: 'sophie', name: 'Sophie', description: 'Young & Lively', accent: 'American', pitch: 1.1 },
-    { id: 'olivia', name: 'Olivia', description: 'Natural & Smooth', accent: 'British', pitch: 1.0 },
-    { id: 'charlotte', name: 'Charlotte', description: 'Expressive', accent: 'American', pitch: 0.95 },
-  ],
-  male: [
-    { id: 'james', name: 'James', description: 'British Gentleman', accent: 'British', pitch: 0.9 },
-    { id: 'michael', name: 'Michael', description: 'Clear & Standard', accent: 'American', pitch: 1.0 },
-    { id: 'david', name: 'David', description: 'Professional', accent: 'American', pitch: 0.95 },
-  ]
-}
-
-type VoiceConfig = typeof VOICE_CONFIGS.female[0]
-
-interface BrowserVoice {
-  voice: SpeechSynthesisVoice | null
-  config: VoiceConfig
+interface VoiceOption {
+  id: string
+  name: string
+  description: string
+  accent: string
+  gender: 'female' | 'male'
+  pitch: number
+  voiceIndex?: number
 }
 
 export default function Home() {
   const [text, setText] = useState('')
-  const [selectedVoiceConfig, setSelectedVoiceConfig] = useState<VoiceConfig>(VOICE_CONFIGS.female[0])
   const [speed, setSpeed] = useState(1.0)
   const [isSpeaking, setIsSpeaking] = useState(false)
   const [isPaused, setIsPaused] = useState(false)
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([])
   const [voicesLoaded, setVoicesLoaded] = useState(false)
+  const [voiceOptions, setVoiceOptions] = useState<VoiceOption[]>([])
+  const [selectedVoiceId, setSelectedVoiceId] = useState<string>('')
   const { toast } = useToast()
   const synthRef = useRef<SpeechSynthesis | null>(null)
 
-  // Load voices
+  // Initialize and load voices
   useEffect(() => {
     if (typeof window !== 'undefined') {
       synthRef.current = window.speechSynthesis
@@ -56,46 +45,127 @@ export default function Home() {
       loadVoices()
       
       // Chrome loads voices asynchronously
-      synthRef.current?.addEventListener('voiceschanged', loadVoices)
+      if (synthRef.current.onvoiceschanged !== undefined) {
+        synthRef.current.onvoiceschanged = loadVoices
+      }
       
       return () => {
-        synthRef.current?.removeEventListener('voiceschanged', loadVoices)
+        if (synthRef.current) {
+          synthRef.current.onvoiceschanged = null
+        }
       }
     }
   }, [])
 
-  // Find best matching voice for the selected config
-  const findBestVoice = useCallback((config: VoiceConfig): SpeechSynthesisVoice | null => {
-    if (!voices.length) return null
+  // Create voice options from available voices
+  useEffect(() => {
+    if (voices.length === 0) return
 
-    const isBritish = config.accent === 'British'
-    const searchTerms = isBritish 
-      ? ['GB', 'UK', 'British', 'en-GB']
-      : ['US', 'American', 'en-US']
+    const englishVoices = voices.filter(v => v.lang.startsWith('en'))
+    const options: VoiceOption[] = []
 
-    // Try to find English voice matching accent
-    for (const term of searchTerms) {
-      const found = voices.find(v => 
-        v.lang.startsWith('en') && 
-        (v.lang.includes(term) || v.name.toLowerCase().includes(term.toLowerCase()))
-      )
-      if (found) return found
+    // Helper to find voice by keywords
+    const findVoiceByKeywords = (keywords: string[]): SpeechSynthesisVoice | null => {
+      for (const keyword of keywords) {
+        const found = englishVoices.find(v => 
+          v.name.toLowerCase().includes(keyword.toLowerCase()) ||
+          v.lang.toLowerCase().includes(keyword.toLowerCase())
+        )
+        if (found) return found
+      }
+      return null
     }
 
-    // Fallback to any English voice
-    const englishVoice = voices.find(v => v.lang.startsWith('en'))
-    if (englishVoice) return englishVoice
+    // Try to find specific voice types
+    // Female voices
+    const femaleVoice1 = findVoiceByKeywords(['Samantha', 'Victoria', 'Karen', 'Moira', 'Tessa', 'Fiona', 'female'])
+    const femaleVoice2 = findVoiceByKeywords(['Siri', 'Alex', 'Nicky', 'Ellen', 'Zira', 'Susan', 'Hazel'])
+    const femaleVoice3 = findVoiceByKeywords(['Google UK English Female', 'Molly', 'Emily', 'Kate'])
+    const femaleVoice4 = findVoiceByKeywords(['Microsoft Zira', 'Microsoft Mark', 'Veena', 'Alice'])
 
-    // Last resort: first available voice
-    return voices[0] || null
+    // Male voices  
+    const maleVoice1 = findVoiceByKeywords(['Daniel', 'George', 'Alex', 'Tom', 'male'])
+    const maleVoice2 = findVoiceByKeywords(['Google UK English Male', 'Brian', 'Arthur'])
+    const maleVoice3 = findVoiceByKeywords(['Microsoft David', 'Microsoft Mark', 'James', 'Richard'])
+
+    // Get unique voices
+    const usedVoices = new Set<string>()
+
+    const addVoiceOption = (
+      voice: SpeechSynthesisVoice | null, 
+      name: string, 
+      description: string, 
+      accent: string, 
+      gender: 'female' | 'male',
+      pitch: number
+    ) => {
+      if (voice && !usedVoices.has(voice.name)) {
+        usedVoices.add(voice.name)
+        options.push({
+          id: voice.name,
+          name: name,
+          description: description,
+          accent: accent,
+          gender: gender,
+          pitch: pitch,
+          voiceIndex: voices.indexOf(voice)
+        })
+      }
+    }
+
+    // Add female voices
+    addVoiceOption(femaleVoice1, 'Emma', 'Warm & Friendly', 'American', 'female', 1.0)
+    addVoiceOption(femaleVoice2, 'Sophie', 'Young & Lively', 'American', 'female', 1.1)
+    addVoiceOption(femaleVoice3, 'Olivia', 'Natural & Smooth', 'British', 'female', 1.0)
+    addVoiceOption(femaleVoice4, 'Charlotte', 'Expressive', 'American', 'female', 0.95)
+
+    // Add male voices
+    addVoiceOption(maleVoice1, 'James', 'British Gentleman', 'British', 'male', 0.9)
+    addVoiceOption(maleVoice2, 'Michael', 'Clear & Standard', 'American', 'male', 1.0)
+    addVoiceOption(maleVoice3, 'David', 'Professional', 'American', 'male', 0.95)
+
+    // If we don't have enough voices, add more from available English voices
+    if (options.length < 3 && englishVoices.length > 0) {
+      englishVoices.slice(0, 7).forEach((voice, index) => {
+        if (!usedVoices.has(voice.name)) {
+          const isLikelyFemale = index % 2 === 0
+          const names = isLikelyFemale 
+            ? ['Emma', 'Sophie', 'Olivia', 'Charlotte'] 
+            : ['James', 'Michael', 'David']
+          const name = names[index % names.length]
+          
+          options.push({
+            id: voice.name,
+            name: name,
+            description: voice.name.includes('UK') || voice.name.includes('British') ? 'British Accent' : 'American Accent',
+            accent: voice.name.includes('UK') || voice.name.includes('British') ? 'British' : 'American',
+            gender: isLikelyFemale ? 'female' : 'male',
+            pitch: isLikelyFemale ? 1.05 : 0.95,
+            voiceIndex: voices.indexOf(voice)
+          })
+          usedVoices.add(voice.name)
+        }
+      })
+    }
+
+    setVoiceOptions(options)
+    if (options.length > 0 && !selectedVoiceId) {
+      setSelectedVoiceId(options[0].id)
+    }
+  }, [voices, selectedVoiceId])
+
+  // Get selected voice option
+  const getSelectedVoiceOption = useCallback((): VoiceOption | null => {
+    return voiceOptions.find(v => v.id === selectedVoiceId) || null
+  }, [voiceOptions, selectedVoiceId])
+
+  // Get actual voice from browser
+  const getVoice = useCallback((voiceOption: VoiceOption): SpeechSynthesisVoice | null => {
+    if (voiceOption.voiceIndex !== undefined) {
+      return voices[voiceOption.voiceIndex] || null
+    }
+    return voices.find(v => v.name === voiceOption.id) || null
   }, [voices])
-
-  // Get voice info display
-  const getVoiceInfo = (config: VoiceConfig): string => {
-    const voice = findBestVoice(config)
-    if (!voice) return 'No voice available'
-    return voice.name
-  }
 
   const speak = () => {
     if (!text.trim()) {
@@ -120,14 +190,17 @@ export default function Home() {
     synthRef.current.cancel()
 
     const utterance = new SpeechSynthesisUtterance(text.trim())
-    const voice = findBestVoice(selectedVoiceConfig)
+    const voiceOption = getSelectedVoiceOption()
     
-    if (voice) {
-      utterance.voice = voice
+    if (voiceOption) {
+      const voice = getVoice(voiceOption)
+      if (voice) {
+        utterance.voice = voice
+      }
+      utterance.pitch = voiceOption.pitch
     }
     
     utterance.rate = speed
-    utterance.pitch = selectedVoiceConfig.pitch
     utterance.lang = 'en-US'
 
     utterance.onstart = () => {
@@ -176,17 +249,16 @@ export default function Home() {
     }
   }
 
-  const handleVoiceSelect = (config: VoiceConfig) => {
-    setSelectedVoiceConfig(config)
+  const handleVoiceSelect = (voiceId: string) => {
+    setSelectedVoiceId(voiceId)
     // Stop current speech when changing voice
     if (isSpeaking) {
       stop()
     }
   }
 
-  const handleSpeedChange = (value: number[]) => {
-    setSpeed(value[0])
-  }
+  const femaleVoices = voiceOptions.filter(v => v.gender === 'female')
+  const maleVoices = voiceOptions.filter(v => v.gender === 'male')
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
@@ -239,66 +311,70 @@ export default function Home() {
           <Card className="shadow-lg border-0 bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm">
             <CardContent className="p-4 md:p-6">
               <Label className="text-base font-semibold mb-4 block">
-                Choose a Voice
+                Choose a Voice ({voiceOptions.length} available)
               </Label>
               
               {/* Female Voices */}
-              <div className="mb-4">
-                <h3 className="text-sm font-medium text-pink-600 dark:text-pink-400 mb-3 flex items-center gap-2">
-                  <span>👩</span> Female Voices
-                </h3>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-3">
-                  {VOICE_CONFIGS.female.map((config) => (
-                    <button
-                      key={config.id}
-                      onClick={() => handleVoiceSelect(config)}
-                      className={`p-3 rounded-xl border-2 transition-all text-left ${
-                        selectedVoiceConfig.id === config.id
-                          ? 'border-pink-400 bg-pink-50 dark:bg-pink-900/30 shadow-md'
-                          : 'border-gray-200 dark:border-gray-600 hover:border-pink-300 hover:bg-pink-50/50 dark:hover:bg-pink-900/20'
-                      }`}
-                    >
-                      <div className="font-semibold text-sm md:text-base">{config.name}</div>
-                      <div className="text-xs text-gray-500 dark:text-gray-400">{config.description}</div>
-                      <Badge variant="secondary" className="mt-1 text-xs">
-                        {config.accent}
-                      </Badge>
-                    </button>
-                  ))}
+              {femaleVoices.length > 0 && (
+                <div className="mb-4">
+                  <h3 className="text-sm font-medium text-pink-600 dark:text-pink-400 mb-3 flex items-center gap-2">
+                    <span>👩</span> Female Voices
+                  </h3>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-3">
+                    {femaleVoices.map((voice) => (
+                      <button
+                        key={voice.id}
+                        onClick={() => handleVoiceSelect(voice.id)}
+                        className={`p-3 rounded-xl border-2 transition-all text-left ${
+                          selectedVoiceId === voice.id
+                            ? 'border-pink-400 bg-pink-50 dark:bg-pink-900/30 shadow-md ring-2 ring-pink-300'
+                            : 'border-gray-200 dark:border-gray-600 hover:border-pink-300 hover:bg-pink-50/50 dark:hover:bg-pink-900/20'
+                        }`}
+                      >
+                        <div className="font-semibold text-sm md:text-base">{voice.name}</div>
+                        <div className="text-xs text-gray-500 dark:text-gray-400">{voice.description}</div>
+                        <Badge variant="secondary" className="mt-1 text-xs">
+                          {voice.accent}
+                        </Badge>
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
 
               {/* Male Voices */}
-              <div>
-                <h3 className="text-sm font-medium text-blue-600 dark:text-blue-400 mb-3 flex items-center gap-2">
-                  <span>👨</span> Male Voices
-                </h3>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-2 md:gap-3">
-                  {VOICE_CONFIGS.male.map((config) => (
-                    <button
-                      key={config.id}
-                      onClick={() => handleVoiceSelect(config)}
-                      className={`p-3 rounded-xl border-2 transition-all text-left ${
-                        selectedVoiceConfig.id === config.id
-                          ? 'border-blue-400 bg-blue-50 dark:bg-blue-900/30 shadow-md'
-                          : 'border-gray-200 dark:border-gray-600 hover:border-blue-300 hover:bg-blue-50/50 dark:hover:bg-blue-900/20'
-                      }`}
-                    >
-                      <div className="font-semibold text-sm md:text-base">{config.name}</div>
-                      <div className="text-xs text-gray-500 dark:text-gray-400">{config.description}</div>
-                      <Badge variant="secondary" className="mt-1 text-xs">
-                        {config.accent}
-                      </Badge>
-                    </button>
-                  ))}
+              {maleVoices.length > 0 && (
+                <div>
+                  <h3 className="text-sm font-medium text-blue-600 dark:text-blue-400 mb-3 flex items-center gap-2">
+                    <span>👨</span> Male Voices
+                  </h3>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2 md:gap-3">
+                    {maleVoices.map((voice) => (
+                      <button
+                        key={voice.id}
+                        onClick={() => handleVoiceSelect(voice.id)}
+                        className={`p-3 rounded-xl border-2 transition-all text-left ${
+                          selectedVoiceId === voice.id
+                            ? 'border-blue-400 bg-blue-50 dark:bg-blue-900/30 shadow-md ring-2 ring-blue-300'
+                            : 'border-gray-200 dark:border-gray-600 hover:border-blue-300 hover:bg-blue-50/50 dark:hover:bg-blue-900/20'
+                        }`}
+                      >
+                        <div className="font-semibold text-sm md:text-base">{voice.name}</div>
+                        <div className="text-xs text-gray-500 dark:text-gray-400">{voice.description}</div>
+                        <Badge variant="secondary" className="mt-1 text-xs">
+                          {voice.accent}
+                        </Badge>
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
 
               {/* Current Voice Info */}
-              {voicesLoaded && (
-                <div className="mt-4 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
-                  <p className="text-sm text-gray-600 dark:text-gray-300">
-                    <strong>Active voice:</strong> {getVoiceInfo(selectedVoiceConfig)}
+              {voicesLoaded && getSelectedVoiceOption() && (
+                <div className="mt-4 p-3 bg-green-50 dark:bg-green-900/20 rounded-lg">
+                  <p className="text-sm text-green-700 dark:text-green-300">
+                    ✓ Selected: <strong>{getSelectedVoiceOption()?.name}</strong> ({getSelectedVoiceOption()?.accent})
                   </p>
                 </div>
               )}
@@ -320,7 +396,7 @@ export default function Home() {
                 <span className="text-sm text-gray-500 w-12">🐢 Slow</span>
                 <Slider
                   value={[speed]}
-                  onValueChange={handleSpeedChange}
+                  onValueChange={(value) => setSpeed(value[0])}
                   min={0.5}
                   max={2.0}
                   step={0.1}
@@ -343,7 +419,7 @@ export default function Home() {
                 {!isSpeaking ? (
                   <Button
                     onClick={speak}
-                    disabled={!text.trim() || !voicesLoaded}
+                    disabled={!text.trim() || !voicesLoaded || voiceOptions.length === 0}
                     className="flex-1 sm:flex-none px-8 py-6 text-lg font-semibold bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 transition-all shadow-lg"
                   >
                     <span className="mr-2">🔊</span>
@@ -408,7 +484,7 @@ export default function Home() {
                 </li>
                 <li className="flex items-start gap-2">
                   <span>•</span>
-                  <span>Practice short phrases first, then move to longer sentences</span>
+                  <span>Click on a voice to select it, then click Speak to hear the difference</span>
                 </li>
                 <li className="flex items-start gap-2">
                   <span>•</span>
