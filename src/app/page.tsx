@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent } from '@/components/ui/card'
@@ -12,15 +12,13 @@ import { useToast } from '@/hooks/use-toast'
 export default function Home() {
   const [text, setText] = useState('')
   const [speed, setSpeed] = useState(1.0)
-  const [pitch, setPitch] = useState(1.0)
   const [isSpeaking, setIsSpeaking] = useState(false)
   const [isPaused, setIsPaused] = useState(false)
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([])
-  const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null)
+  const [selectedVoiceURI, setSelectedVoiceURI] = useState<string>('')
   const [voicesLoaded, setVoicesLoaded] = useState(false)
   const { toast } = useToast()
   const synthRef = useRef<SpeechSynthesis | null>(null)
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
 
   // Load voices
   useEffect(() => {
@@ -34,19 +32,30 @@ export default function Home() {
           setVoicesLoaded(true)
           // Select first English voice by default
           const englishVoice = availableVoices.find(v => v.lang.startsWith('en'))
-          setSelectedVoice(englishVoice || availableVoices[0])
+          if (englishVoice) {
+            setSelectedVoiceURI(englishVoice.voiceURI)
+          } else if (availableVoices[0]) {
+            setSelectedVoiceURI(availableVoices[0].voiceURI)
+          }
         }
       }
 
       loadVoices()
       
-      // Chrome loads voices asynchronously
+      // Keep trying to load voices (needed for some browsers)
+      let attempts = 0
       const interval = setInterval(() => {
         const v = synthRef.current?.getVoices()
-        if (v && v.length > 0 && v.length !== voices.length) {
-          loadVoices()
+        attempts++
+        if (v && v.length > 0) {
+          setVoices(v)
+          if (!selectedVoiceURI && v.length > 0) {
+            const englishVoice = v.find(voice => voice.lang.startsWith('en'))
+            setSelectedVoiceURI(englishVoice?.voiceURI || v[0].voiceURI)
+          }
         }
-      }, 100)
+        if (attempts > 20) clearInterval(interval)
+      }, 200)
 
       if (synthRef.current.onvoiceschanged !== undefined) {
         synthRef.current.onvoiceschanged = loadVoices
@@ -59,7 +68,12 @@ export default function Home() {
         }
       }
     }
-  }, [])
+  }, [selectedVoiceURI])
+
+  // Get selected voice object
+  const getSelectedVoice = (): SpeechSynthesisVoice | null => {
+    return voices.find(v => v.voiceURI === selectedVoiceURI) || null
+  }
 
   // Filter English voices
   const englishVoices = voices.filter(v => v.lang.startsWith('en'))
@@ -78,7 +92,7 @@ export default function Home() {
     if (!synthRef.current) {
       toast({
         title: 'Error',
-        description: 'Speech synthesis not supported in this browser',
+        description: 'Speech synthesis not supported',
         variant: 'destructive',
       })
       return
@@ -88,6 +102,7 @@ export default function Home() {
     synthRef.current.cancel()
 
     const utterance = new SpeechSynthesisUtterance(text.trim())
+    const selectedVoice = getSelectedVoice()
     
     if (selectedVoice) {
       utterance.voice = selectedVoice
@@ -97,7 +112,6 @@ export default function Home() {
     }
     
     utterance.rate = speed
-    utterance.pitch = pitch
 
     utterance.onstart = () => {
       setIsSpeaking(true)
@@ -113,14 +127,8 @@ export default function Home() {
       console.error('Speech error:', event)
       setIsSpeaking(false)
       setIsPaused(false)
-      toast({
-        title: 'Error',
-        description: 'Failed to speak. Please try again.',
-        variant: 'destructive',
-      })
     }
 
-    utteranceRef.current = utterance
     synthRef.current.speak(utterance)
   }
 
@@ -146,53 +154,22 @@ export default function Home() {
     }
   }
 
-  const handleVoiceSelect = (voice: SpeechSynthesisVoice) => {
-    setSelectedVoice(voice)
-    // Stop current speech when changing voice
+  const handleVoiceSelect = (voiceURI: string) => {
+    setSelectedVoiceURI(voiceURI)
     if (isSpeaking) {
       stop()
     }
   }
 
-  const getVoiceDisplayName = (voice: SpeechSynthesisVoice) => {
-    // Extract a friendly name from the voice
-    let name = voice.name
-      .replace('Microsoft ', '')
-      .replace('Google ', '')
-      .replace(' Online (Natural)', '')
-      .replace(' Enhanced', '')
-      .replace(' Compact', '')
-      .replace('(Female)', '')
-      .replace('(Male)', '')
-      .trim()
-    
-    return name
-  }
-
-  const getVoiceAccent = (voice: SpeechSynthesisVoice) => {
-    if (voice.lang.includes('GB') || voice.lang.includes('UK')) return 'British'
-    if (voice.lang.includes('US')) return 'American'
-    if (voice.lang.includes('AU')) return 'Australian'
-    if (voice.lang.includes('CA')) return 'Canadian'
-    if (voice.lang.includes('IN')) return 'Indian'
-    return voice.lang.split('-')[1] || 'Other'
-  }
-
-  const getVoiceGender = (voice: SpeechSynthesisVoice) => {
-    const name = voice.name.toLowerCase()
-    if (name.includes('female') || name.includes('woman') || name.includes('girl')) return 'female'
-    if (name.includes('male') || name.includes('man') || name.includes('boy')) return 'male'
-    // Common female voice names
-    const femaleNames = ['samantha', 'victoria', 'karen', 'moira', 'tessa', 'fiona', 'siri', 'alex', 'zira', 'susan', 'hazel', 'emma', 'olivia', 'sophie', 'charlotte']
-    const maleNames = ['daniel', 'george', 'tom', 'james', 'david', 'michael', 'mark', 'richard', 'brian', 'arthur']
-    
-    for (const fn of femaleNames) {
-      if (name.includes(fn)) return 'female'
-    }
-    for (const mn of maleNames) {
-      if (name.includes(mn)) return 'male'
-    }
-    return 'neutral'
+  const getVoiceAccent = (voice: SpeechSynthesisVoice): string => {
+    if (voice.lang.includes('GB') || voice.lang.includes('UK')) return '🇬🇧 British'
+    if (voice.lang.includes('US')) return '🇺🇸 American'
+    if (voice.lang.includes('AU')) return '🇦🇺 Australian'
+    if (voice.lang.includes('CA')) return '🇨🇦 Canadian'
+    if (voice.lang.includes('IE')) return '🇮🇪 Irish'
+    if (voice.lang.includes('IN')) return '🇮🇳 Indian'
+    if (voice.lang.includes('ZA')) return '🇿🇦 South African'
+    return `🌐 ${voice.lang}`
   }
 
   return (
@@ -215,7 +192,7 @@ export default function Home() {
         {!voicesLoaded && (
           <Card className="mb-6 border-yellow-200 bg-yellow-50 dark:bg-yellow-900/20">
             <CardContent className="p-4 text-center">
-              <p className="text-yellow-700 dark:text-yellow-300">Loading voices from your device...</p>
+              <p className="text-yellow-700 dark:text-yellow-300">Loading voices...</p>
             </CardContent>
           </Card>
         )}
@@ -246,45 +223,37 @@ export default function Home() {
           <Card className="shadow-lg border-0 bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm">
             <CardContent className="p-4 md:p-6">
               <Label className="text-base font-semibold mb-4 block">
-                Choose a Voice ({voices.length} available on your device)
+                Select a Voice ({voices.length} available)
               </Label>
               
               {/* English Voices */}
               {englishVoices.length > 0 && (
                 <div className="mb-4">
-                  <h3 className="text-sm font-medium text-green-600 dark:text-green-400 mb-3 flex items-center gap-2">
-                    <span>🇬🇧</span> English Voices (Recommended)
+                  <h3 className="text-sm font-medium text-green-600 dark:text-green-400 mb-3">
+                    🇬🇧 English Voices
                   </h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-64 overflow-y-auto">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-80 overflow-y-auto pr-2">
                     {englishVoices.map((voice) => {
-                      const gender = getVoiceGender(voice)
-                      const isSelected = selectedVoice?.name === voice.name
+                      const isSelected = selectedVoiceURI === voice.voiceURI
                       return (
                         <button
-                          key={voice.name}
-                          onClick={() => handleVoiceSelect(voice)}
+                          key={voice.voiceURI}
+                          onClick={() => handleVoiceSelect(voice.voiceURI)}
                           className={`p-3 rounded-xl border-2 transition-all text-left ${
                             isSelected
-                              ? 'border-green-400 bg-green-50 dark:bg-green-900/30 shadow-md ring-2 ring-green-300'
-                              : 'border-gray-200 dark:border-gray-600 hover:border-green-300 hover:bg-green-50/50 dark:hover:bg-green-900/20'
+                              ? 'border-green-500 bg-green-50 dark:bg-green-900/30 shadow-md'
+                              : 'border-gray-200 dark:border-gray-600 hover:border-green-300 hover:bg-gray-50 dark:hover:bg-gray-700/50'
                           }`}
                         >
-                          <div className="flex items-center gap-2">
-                            <span className="text-lg">
-                              {gender === 'female' ? '👩' : gender === 'male' ? '👨' : '🗣️'}
-                            </span>
-                            <div>
-                              <div className="font-semibold text-sm">{getVoiceDisplayName(voice)}</div>
-                              <div className="flex gap-2 mt-1">
-                                <Badge variant="secondary" className="text-xs">
-                                  {getVoiceAccent(voice)}
-                                </Badge>
-                                <Badge variant="outline" className="text-xs">
-                                  {voice.lang}
-                                </Badge>
-                              </div>
-                            </div>
+                          <div className="font-semibold text-sm">{voice.name}</div>
+                          <div className="flex gap-2 mt-1 flex-wrap">
+                            <Badge variant={isSelected ? "default" : "secondary"} className="text-xs">
+                              {getVoiceAccent(voice)}
+                            </Badge>
                           </div>
+                          {isSelected && (
+                            <div className="mt-2 text-xs text-green-600 font-medium">✓ Selected</div>
+                          )}
                         </button>
                       )
                     })}
@@ -295,23 +264,23 @@ export default function Home() {
               {/* Other Voices */}
               {otherVoices.length > 0 && (
                 <details className="mt-4">
-                  <summary className="text-sm font-medium text-gray-500 cursor-pointer">
-                    Other Languages ({otherVoices.length} voices)
+                  <summary className="text-sm font-medium text-gray-500 cursor-pointer hover:text-gray-700">
+                    🌐 Other Languages ({otherVoices.length} voices)
                   </summary>
                   <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2 max-h-48 overflow-y-auto">
-                    {otherVoices.slice(0, 10).map((voice) => {
-                      const isSelected = selectedVoice?.name === voice.name
+                    {otherVoices.map((voice) => {
+                      const isSelected = selectedVoiceURI === voice.voiceURI
                       return (
                         <button
-                          key={voice.name}
-                          onClick={() => handleVoiceSelect(voice)}
+                          key={voice.voiceURI}
+                          onClick={() => handleVoiceSelect(voice.voiceURI)}
                           className={`p-2 rounded-lg border text-left text-sm ${
                             isSelected
                               ? 'border-gray-400 bg-gray-100 dark:bg-gray-700'
-                              : 'border-gray-200 hover:bg-gray-50'
+                              : 'border-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'
                           }`}
                         >
-                          <div className="font-medium">{getVoiceDisplayName(voice)}</div>
+                          <div className="font-medium">{voice.name}</div>
                           <div className="text-xs text-gray-500">{voice.lang}</div>
                         </button>
                       )
@@ -320,66 +289,35 @@ export default function Home() {
                 </details>
               )}
 
-              {/* Current Voice Info */}
-              {selectedVoice && (
-                <div className="mt-4 p-3 bg-green-50 dark:bg-green-900/20 rounded-lg">
-                  <p className="text-sm text-green-700 dark:text-green-300">
-                    ✓ Selected: <strong>{getVoiceDisplayName(selectedVoice)}</strong> ({getVoiceAccent(selectedVoice)})
+              {/* Current Voice */}
+              {getSelectedVoice() && (
+                <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+                  <p className="text-sm text-blue-700 dark:text-blue-300">
+                    🎤 Active voice: <strong>{getSelectedVoice()?.name}</strong>
                   </p>
                 </div>
               )}
             </CardContent>
           </Card>
 
-          {/* Speed and Pitch Control */}
+          {/* Speed Control */}
           <Card className="shadow-lg border-0 bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm">
             <CardContent className="p-4 md:p-6">
-              {/* Speed */}
-              <div className="mb-6">
-                <div className="flex items-center justify-between mb-3">
-                  <Label className="text-base font-semibold">
-                    Speech Speed
-                  </Label>
-                  <Badge variant="outline" className="text-base font-mono">
-                    {speed.toFixed(1)}x
-                  </Badge>
-                </div>
-                <div className="flex items-center gap-4">
-                  <span className="text-sm text-gray-500 w-12">🐢 Slow</span>
-                  <Slider
-                    value={[speed]}
-                    onValueChange={(value) => setSpeed(value[0])}
-                    min={0.5}
-                    max={2.0}
-                    step={0.1}
-                    className="flex-1"
-                  />
-                  <span className="text-sm text-gray-500 w-12 text-right">Fast 🐇</span>
-                </div>
+              <div className="flex items-center justify-between mb-3">
+                <Label className="text-base font-semibold">Speech Speed</Label>
+                <Badge variant="outline" className="text-base font-mono">{speed.toFixed(1)}x</Badge>
               </div>
-
-              {/* Pitch */}
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <Label className="text-base font-semibold">
-                    Voice Pitch
-                  </Label>
-                  <Badge variant="outline" className="text-base font-mono">
-                    {pitch.toFixed(1)}
-                  </Badge>
-                </div>
-                <div className="flex items-center gap-4">
-                  <span className="text-sm text-gray-500 w-12">Low 🔈</span>
-                  <Slider
-                    value={[pitch]}
-                    onValueChange={(value) => setPitch(value[0])}
-                    min={0.5}
-                    max={2.0}
-                    step={0.1}
-                    className="flex-1"
-                  />
-                  <span className="text-sm text-gray-500 w-12 text-right">High 🔊</span>
-                </div>
+              <div className="flex items-center gap-4">
+                <span className="text-sm text-gray-500 w-12">🐢 Slow</span>
+                <Slider
+                  value={[speed]}
+                  onValueChange={(value) => setSpeed(value[0])}
+                  min={0.5}
+                  max={2.0}
+                  step={0.1}
+                  className="flex-1"
+                />
+                <span className="text-sm text-gray-500 w-12 text-right">Fast 🐇</span>
               </div>
             </CardContent>
           </Card>
@@ -391,20 +329,17 @@ export default function Home() {
                 {!isSpeaking ? (
                   <Button
                     onClick={speak}
-                    disabled={!text.trim() || !voicesLoaded || !selectedVoice}
+                    disabled={!text.trim() || !selectedVoiceURI}
                     className="flex-1 sm:flex-none px-8 py-6 text-lg font-semibold bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 transition-all shadow-lg"
                   >
-                    <span className="mr-2">🔊</span>
-                    Speak
+                    🔊 Speak
                   </Button>
                 ) : isPaused ? (
                   <Button
                     onClick={resume}
-                    variant="default"
                     className="flex-1 sm:flex-none px-8 py-6 text-lg font-semibold bg-green-500 hover:bg-green-600"
                   >
-                    <span className="mr-2">▶️</span>
-                    Resume
+                    ▶️ Resume
                   </Button>
                 ) : (
                   <Button
@@ -412,8 +347,7 @@ export default function Home() {
                     variant="outline"
                     className="flex-1 sm:flex-none px-8 py-6 text-lg font-semibold"
                   >
-                    <span className="mr-2">⏸️</span>
-                    Pause
+                    ⏸️ Pause
                   </Button>
                 )}
 
@@ -423,8 +357,7 @@ export default function Home() {
                     variant="destructive"
                     className="flex-1 sm:flex-none px-8 py-6 text-lg font-semibold"
                   >
-                    <span className="mr-2">⏹️</span>
-                    Stop
+                    ⏹️ Stop
                   </Button>
                 )}
               </div>
@@ -443,42 +376,19 @@ export default function Home() {
           <Card className="shadow-md border-0 bg-amber-50/80 dark:bg-amber-900/20 backdrop-blur-sm">
             <CardContent className="p-4 md:p-6">
               <h3 className="font-semibold text-amber-700 dark:text-amber-300 mb-3 flex items-center gap-2">
-                <span>💡</span> Tips for Better Practice
+                💡 Tips
               </h3>
               <ul className="space-y-2 text-sm text-amber-800 dark:text-amber-200">
-                <li className="flex items-start gap-2">
-                  <span>•</span>
-                  <span>Start with slower speed (0.7x - 0.8x) to hear each sound clearly</span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <span>•</span>
-                  <span>Try different voices to hear various accents and pronunciations</span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <span>•</span>
-                  <span>Adjust pitch to make the voice higher or lower</span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <span>•</span>
-                  <span>Listen multiple times and try to mimic the pronunciation</span>
-                </li>
+                <li>• Use slower speed (0.7x-0.8x) to hear each sound clearly</li>
+                <li>• Click on different voices to hear various accents</li>
+                <li>• British voices 🇬🇧 sound different from American 🇺🇸</li>
               </ul>
-            </CardContent>
-          </Card>
-
-          {/* Device Info */}
-          <Card className="shadow-md border-0 bg-gray-50/80 dark:bg-gray-800/50 backdrop-blur-sm">
-            <CardContent className="p-4 text-center">
-              <p className="text-xs text-gray-500 dark:text-gray-400">
-                Voices come from your device • Works on all modern browsers • Free forever
-              </p>
             </CardContent>
           </Card>
         </div>
 
-        {/* Footer */}
-        <footer className="text-center mt-8 md:mt-12 text-sm text-gray-500 dark:text-gray-400">
-          <p>Made for English learners 📚</p>
+        <footer className="text-center mt-8 md:mt-12 text-sm text-gray-500">
+          Made for English learners 📚
         </footer>
       </div>
     </main>
