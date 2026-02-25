@@ -1,0 +1,48 @@
+# 🚀 GUIA RÁPIDO - Publicar seu App Online
+
+## Opção 1: VERCEL (Mais Fácil - Recomendado)
+
+### Passo 1: Criar conta
+Acesse: https://vercel.com e crie uma conta gratuita (pode usar GitHub)
+
+### Passo 2: Instalar Vercel
+Abra o terminal na pasta do projeto e execute:
+```
+npm i -g vercel
+```
+
+### Passo 3: Publicar
+Na pasta do projeto, execute:
+```
+vercel
+```
+
+Siga as instruções (pressione Enter para todas as perguntas).
+
+### Passo 4: Pronto! 
+O Vercel vai te dar uma URL como:
+https://english-phonetics-trainer.vercel.app
+
+---
+
+## Opção 2: Usar GitHub + Vercel (Sem terminal)
+
+1. Crie uma conta no GitHub.com
+2. Crie um repositório novo
+3. Arraste os arquivos do projeto para o GitHub
+4. Vá em vercel.com e importe o repositório
+5. Pronto! URL gerada automaticamente
+
+---
+
+## Depois de publicado:
+
+✅ Envie o link para seus alunos
+✅ Eles clicam e usam direto
+✅ Funciona em qualquer dispositivo
+✅ Link permanente e gratuito!
+
+---
+
+## Precisa de ajuda?
+Me chame se tiver dúvidas em qualquer passo!
