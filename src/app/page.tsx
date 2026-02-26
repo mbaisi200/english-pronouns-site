@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent } from '@/components/ui/card'
@@ -36,12 +36,13 @@ export default function Home() {
   const [isProcessing, setIsProcessing] = useState(false)
   const [spokenText, setSpokenText] = useState('')
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null)
+  const [speechSupported, setSpeechSupported] = useState(false)
   
   const { toast } = useToast()
   const synthRef = useRef<SpeechSynthesis | null>(null)
   const voicesRef = useRef<SpeechSynthesisVoice[]>([])
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const audioChunksRef = useRef<Blob[]>([])
+  const recognitionRef = useRef<SpeechRecognition | null>(null)
+  const speechSupportedRef = useRef(false)
 
   // Load voices
   useEffect(() => {
@@ -75,6 +76,22 @@ export default function Home() {
         if (synthRef.current) {
           synthRef.current.cancel()
         }
+      }
+    }
+  }, [])
+
+  // Initialize Speech Recognition
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+      if (SpeechRecognition) {
+        recognitionRef.current = new SpeechRecognition()
+        recognitionRef.current.continuous = false
+        recognitionRef.current.interimResults = false
+        recognitionRef.current.lang = 'en-US'
+        speechSupportedRef.current = true
+        // Trigger re-render to show support status
+        setTimeout(() => setSpeechSupported(true), 0)
       }
     }
   }, [])
@@ -140,7 +157,6 @@ export default function Home() {
     utterance.onstart = () => setIsSpeaking(true)
     utterance.onend = () => {
       setIsSpeaking(false)
-      // Move to speak step after listening
       setCurrentStep('speak')
     }
     utterance.onerror = () => setIsSpeaking(false)
@@ -156,120 +172,150 @@ export default function Home() {
     }
   }
 
-  // Recording functions
-  const startRecording = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      
-      // Check supported MIME types
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm') 
-        ? 'audio/webm' 
-        : MediaRecorder.isTypeSupported('audio/mp4') 
-          ? 'audio/mp4' 
-          : 'audio/wav'
-      
-      const mediaRecorder = new MediaRecorder(stream, { mimeType })
-      mediaRecorderRef.current = mediaRecorder
-      audioChunksRef.current = []
-
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data)
-        }
-      }
-
-      mediaRecorder.onstop = async () => {
-        stream.getTracks().forEach(track => track.stop())
-        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType })
-        console.log('Audio blob size:', audioBlob.size, 'type:', mimeType)
-        await processAudio(audioBlob)
-      }
-
-      mediaRecorder.start()
-      setIsRecording(true)
-    } catch (error) {
-      console.error('Recording error:', error)
+  // Start recording with Web Speech API
+  const startRecording = () => {
+    if (!recognitionRef.current) {
       toast({
         title: 'Error',
-        description: 'Could not access microphone. Please allow microphone access.',
+        description: 'Speech recognition not supported. Please use Chrome or Edge.',
         variant: 'destructive',
       })
+      return
+    }
+
+    setIsRecording(true)
+    setSpokenText('')
+    setAnalysisResult(null)
+
+    recognitionRef.current.onresult = async (event) => {
+      const transcript = event.results[0][0].transcript
+      console.log('Transcript:', transcript)
+      setSpokenText(transcript)
+      setIsRecording(false)
+      setIsProcessing(true)
+      
+      // Analyze the speech
+      await analyzeSpeech(transcript)
+    }
+
+    recognitionRef.current.onerror = (event) => {
+      console.error('Speech recognition error:', event.error)
+      setIsRecording(false)
+      toast({
+        title: 'Error',
+        description: `Speech recognition error: ${event.error}. Please try again.`,
+        variant: 'destructive',
+      })
+    }
+
+    recognitionRef.current.onend = () => {
+      setIsRecording(false)
+    }
+
+    try {
+      recognitionRef.current.start()
+    } catch {
+      toast({
+        title: 'Error',
+        description: 'Could not start speech recognition. Please try again.',
+        variant: 'destructive',
+      })
+      setIsRecording(false)
     }
   }
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop()
+    if (recognitionRef.current) {
+      recognitionRef.current.stop()
       setIsRecording(false)
-      setIsProcessing(true)
     }
   }
 
-  const processAudio = async (audioBlob: Blob) => {
+  // Analyze speech using local comparison
+  const analyzeSpeech = async (transcript: string) => {
     try {
-      console.log('Processing audio...')
+      const originalWords = text.toLowerCase().replace(/[.,!?;:'"]/g, '').split(/\s+/).filter(w => w.length > 0)
+      const spokenWords = transcript.toLowerCase().replace(/[.,!?;:'"]/g, '').split(/\s+/).filter(w => w.length > 0)
       
-      // Convert blob to base64
-      const base64Audio = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader()
-        reader.onloadend = () => {
-          const result = reader.result as string
-          const base64 = result.split(',')[1]
-          resolve(base64)
+      const correctWords: string[] = []
+      const incorrectWords: Array<{ word: string; spokenAs: string; tip: string }> = []
+      const missingWords: string[] = []
+      const extraWords: string[] = []
+      
+      // Simple comparison
+      const spokenSet = new Set(spokenWords)
+      const originalSet = new Set(originalWords)
+      
+      // Find correct and missing words
+      originalWords.forEach(word => {
+        if (spokenSet.has(word)) {
+          correctWords.push(word)
+        } else {
+          missingWords.push(word)
         }
-        reader.onerror = () => reject(new Error('Failed to read audio file'))
-        reader.readAsDataURL(audioBlob)
       })
-
-      console.log('Sending to ASR API...')
-
-      // Send to ASR API
-      const asrResponse = await fetch('/api/asr', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ audio_base64: base64Audio })
+      
+      // Find extra words (spoken but not in original)
+      spokenWords.forEach(word => {
+        if (!originalSet.has(word)) {
+          extraWords.push(word)
+        }
       })
+      
+      // Calculate score
+      const score = originalWords.length > 0 
+        ? Math.round((correctWords.length / originalWords.length) * 100)
+        : 0
 
-      console.log('ASR response status:', asrResponse.status)
-      const asrResult = await asrResponse.json()
-      console.log('ASR result:', asrResult)
-
-      if (!asrResult.success) {
-        throw new Error(asrResult.error || 'Failed to transcribe')
+      // Generate pronunciation tips based on missing words
+      const pronunciationTips: string[] = []
+      if (missingWords.length > 0) {
+        pronunciationTips.push(`Practice these words: ${missingWords.slice(0, 3).join(', ')}`)
+      }
+      if (extraWords.length > 0) {
+        pronunciationTips.push(`You added extra words. Try to match the original text exactly.`)
+      }
+      if (score < 70) {
+        pronunciationTips.push(`Try speaking more slowly and clearly.`)
+        pronunciationTips.push(`Listen to the text again before practicing.`)
+      }
+      if (score >= 80) {
+        pronunciationTips.push(`Great job! Keep practicing to maintain your skills.`)
       }
 
-      setSpokenText(asrResult.transcription)
-
-      console.log('Sending to Compare API...')
-
-      // Send to compare API
-      const compareResponse = await fetch('/api/compare', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          originalText: text,
-          spokenText: asrResult.transcription
-        })
-      })
-
-      console.log('Compare response status:', compareResponse.status)
-      const compareResult = await compareResponse.json()
-      console.log('Compare result:', compareResult)
-
-      if (compareResult.success) {
-        setAnalysisResult(compareResult.analysis)
-        setCurrentStep('result')
+      // Generate feedback
+      let feedback = ''
+      if (score >= 90) {
+        feedback = `Excellent pronunciation! You said "${transcript}" which matches the original text very well.`
+      } else if (score >= 70) {
+        feedback = `Good effort! You said "${transcript}". You got most of the words right. Keep practicing the words you missed.`
+      } else if (score >= 50) {
+        feedback = `Nice try! You said "${transcript}". Focus on pronouncing each word clearly. Listen again and try to match the rhythm.`
       } else {
-        throw new Error(compareResult.error || 'Failed to analyze')
+        feedback = `Keep practicing! You said "${transcript}". Try listening to the text multiple times and speaking more slowly.`
       }
 
+      const result: AnalysisResult = {
+        score,
+        accuracy: `${score}%`,
+        correctWords,
+        incorrectWords,
+        missingWords,
+        extraWords,
+        feedback,
+        pronunciationTips
+      }
+
+      setAnalysisResult(result)
+      setCurrentStep('result')
       setIsProcessing(false)
+
     } catch (error) {
-      console.error('Process audio error:', error)
+      console.error('Analysis error:', error)
       setIsProcessing(false)
       toast({
         title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to process audio',
+        description: 'Failed to analyze speech',
         variant: 'destructive',
       })
     }
@@ -462,8 +508,13 @@ export default function Home() {
                         : 'bg-green-500 hover:bg-green-600'
                     }`}
                   >
-                    {isRecording ? '⏹️ Stop Recording' : '🎙️ Start Recording'}
+                    {isRecording ? '⏹️ Stop Speaking' : '🎙️ Start Speaking'}
                   </Button>
+                  {isRecording && (
+                    <p className="text-sm text-gray-500 mt-2 animate-pulse">
+                      🎧 Listening... Speak now!
+                    </p>
+                  )}
                 </CardContent>
               </Card>
 
@@ -471,7 +522,7 @@ export default function Home() {
                 <Card className="shadow-lg bg-blue-50 dark:bg-blue-900/20">
                   <CardContent className="p-4 text-center">
                     <div className="animate-spin text-4xl mb-2">⚙️</div>
-                    <p className="text-blue-600 dark:text-blue-400">Processing your speech...</p>
+                    <p className="text-blue-600 dark:text-blue-400">Analyzing your speech...</p>
                   </CardContent>
                 </Card>
               )}
@@ -508,7 +559,7 @@ export default function Home() {
                 <CardContent className="p-4">
                   <Label className="font-semibold mb-2 block">📝 What you said:</Label>
                   <p className="text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-800 p-3 rounded-lg">
-                    {spokenText}
+                    {spokenText || '(nothing detected)'}
                   </p>
                 </CardContent>
               </Card>
@@ -537,7 +588,7 @@ export default function Home() {
               {analysisResult.correctWords.length > 0 && (
                 <Card className="shadow-lg border-green-200 dark:border-green-800">
                   <CardContent className="p-4">
-                    <Label className="font-semibold mb-2 block text-green-600">✅ Correct words:</Label>
+                    <Label className="font-semibold mb-2 block text-green-600">✅ Correct words ({analysisResult.correctWords.length}):</Label>
                     <div className="flex flex-wrap gap-2">
                       {analysisResult.correctWords.map((word, i) => (
                         <Badge key={i} variant="outline" className="bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300">
@@ -549,31 +600,28 @@ export default function Home() {
                 </Card>
               )}
 
-              {analysisResult.incorrectWords.length > 0 && (
-                <Card className="shadow-lg border-yellow-200 dark:border-yellow-800">
+              {analysisResult.missingWords.length > 0 && (
+                <Card className="shadow-lg border-red-200 dark:border-red-800">
                   <CardContent className="p-4">
-                    <Label className="font-semibold mb-2 block text-yellow-600">⚠️ Words to improve:</Label>
-                    <div className="space-y-2">
-                      {analysisResult.incorrectWords.map((item, i) => (
-                        <div key={i} className="bg-yellow-50 dark:bg-yellow-900/30 p-2 rounded-lg">
-                          <span className="font-medium">{item.word}</span>
-                          <span className="text-gray-500 mx-2">→</span>
-                          <span className="text-yellow-700 dark:text-yellow-300">{item.spokenAs}</span>
-                          <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">💡 {item.tip}</p>
-                        </div>
+                    <Label className="font-semibold mb-2 block text-red-600">❌ Missing words ({analysisResult.missingWords.length}):</Label>
+                    <div className="flex flex-wrap gap-2">
+                      {analysisResult.missingWords.map((word, i) => (
+                        <Badge key={i} variant="outline" className="bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300">
+                          {word}
+                        </Badge>
                       ))}
                     </div>
                   </CardContent>
                 </Card>
               )}
 
-              {analysisResult.missingWords.length > 0 && (
-                <Card className="shadow-lg border-red-200 dark:border-red-800">
+              {analysisResult.extraWords.length > 0 && (
+                <Card className="shadow-lg border-orange-200 dark:border-orange-800">
                   <CardContent className="p-4">
-                    <Label className="font-semibold mb-2 block text-red-600">❌ Missing words:</Label>
+                    <Label className="font-semibold mb-2 block text-orange-600">➕ Extra words spoken:</Label>
                     <div className="flex flex-wrap gap-2">
-                      {analysisResult.missingWords.map((word, i) => (
-                        <Badge key={i} variant="outline" className="bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300">
+                      {analysisResult.extraWords.map((word, i) => (
+                        <Badge key={i} variant="outline" className="bg-orange-50 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300">
                           {word}
                         </Badge>
                       ))}
@@ -600,7 +648,11 @@ export default function Home() {
               <div className="grid grid-cols-2 gap-4">
                 <Button
                   variant="outline"
-                  onClick={() => setCurrentStep('speak')}
+                  onClick={() => {
+                    setSpokenText('')
+                    setAnalysisResult(null)
+                    setCurrentStep('speak')
+                  }}
                   className="py-4"
                 >
                   🎙️ Try Again
@@ -620,7 +672,18 @@ export default function Home() {
             <Card className="bg-amber-50 dark:bg-amber-900/20 border-0">
               <CardContent className="p-4">
                 <p className="text-sm text-amber-800 dark:text-amber-200">
-                  💡 <strong>Tip:</strong> Use slower speed (0.7x-0.8x) to hear each sound clearly. After listening, you can practice speaking and get instant feedback!
+                  💡 <strong>Tip:</strong> Use slower speed (0.7x-0.8x) to hear each sound clearly. After listening, speak and get instant feedback!
+                </p>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Browser Support Warning */}
+          {currentStep === 'speak' && !speechSupported && (
+            <Card className="bg-red-50 dark:bg-red-900/20 border-0">
+              <CardContent className="p-4">
+                <p className="text-sm text-red-800 dark:text-red-200">
+                  ⚠️ <strong>Warning:</strong> Speech recognition is not supported in this browser. Please use Chrome or Edge for the best experience.
                 </p>
               </CardContent>
             </Card>
