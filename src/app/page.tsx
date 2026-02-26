@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent } from '@/components/ui/card'
@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label'
 import { useToast } from '@/hooks/use-toast'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
+import { useHybridSpeechRecognition } from '@/hooks/use-hybrid-speech-recognition'
 
 type Step = 'input' | 'listen' | 'speak' | 'result'
 
@@ -32,17 +33,41 @@ export default function Home() {
   const [currentStep, setCurrentStep] = useState<Step>('input')
   
   // Recording states
-  const [isRecording, setIsRecording] = useState(false)
-  const [isProcessing, setIsProcessing] = useState(false)
   const [spokenText, setSpokenText] = useState('')
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null)
-  const [speechSupported, setSpeechSupported] = useState(false)
   
   const { toast } = useToast()
   const synthRef = useRef<SpeechSynthesis | null>(null)
   const voicesRef = useRef<SpeechSynthesisVoice[]>([])
-  const recognitionRef = useRef<SpeechRecognition | null>(null)
-  const speechSupportedRef = useRef(false)
+  
+  // Hybrid speech recognition hook - works on iOS, Android, and desktop
+  const {
+    isRecording,
+    isProcessing,
+    isSupported: speechSupported,
+    method: recognitionMethod,
+    startRecording,
+    stopRecording,
+    platform
+  } = useHybridSpeechRecognition({
+    language: 'en-US',
+    onResult: (result) => {
+      console.log('Recognition result:', result)
+      setSpokenText(result.transcript)
+      // Analyze the speech after getting result
+      analyzeSpeech(result.transcript)
+    },
+    onError: (error) => {
+      toast({
+        title: 'Error',
+        description: `Speech recognition error: ${error}. Please try again.`,
+        variant: 'destructive',
+      })
+    },
+    onEnd: () => {
+      // Recording ended
+    }
+  })
 
   // Load voices
   useEffect(() => {
@@ -80,21 +105,7 @@ export default function Home() {
     }
   }, [])
 
-  // Initialize Speech Recognition
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-      if (SpeechRecognition) {
-        recognitionRef.current = new SpeechRecognition()
-        recognitionRef.current.continuous = false
-        recognitionRef.current.interimResults = false
-        recognitionRef.current.lang = 'en-US'
-        speechSupportedRef.current = true
-        // Trigger re-render to show support status
-        setTimeout(() => setSpeechSupported(true), 0)
-      }
-    }
-  }, [])
+
 
   // Find best voice for gender
   const getVoice = (gender: 'male' | 'female'): SpeechSynthesisVoice | null => {
@@ -172,154 +183,90 @@ export default function Home() {
     }
   }
 
-  // Start recording with Web Speech API
-  const startRecording = () => {
-    if (!recognitionRef.current) {
-      toast({
-        title: 'Error',
-        description: 'Speech recognition not supported. Please use Chrome or Edge.',
-        variant: 'destructive',
-      })
-      return
-    }
-
-    setIsRecording(true)
+  // Handle recording start (wrapper for the hook)
+  const handleStartRecording = async () => {
     setSpokenText('')
     setAnalysisResult(null)
-
-    recognitionRef.current.onresult = async (event) => {
-      const transcript = event.results[0][0].transcript
-      console.log('Transcript:', transcript)
-      setSpokenText(transcript)
-      setIsRecording(false)
-      setIsProcessing(true)
-      
-      // Analyze the speech
-      await analyzeSpeech(transcript)
-    }
-
-    recognitionRef.current.onerror = (event) => {
-      console.error('Speech recognition error:', event.error)
-      setIsRecording(false)
-      toast({
-        title: 'Error',
-        description: `Speech recognition error: ${event.error}. Please try again.`,
-        variant: 'destructive',
-      })
-    }
-
-    recognitionRef.current.onend = () => {
-      setIsRecording(false)
-    }
-
-    try {
-      recognitionRef.current.start()
-    } catch {
-      toast({
-        title: 'Error',
-        description: 'Could not start speech recognition. Please try again.',
-        variant: 'destructive',
-      })
-      setIsRecording(false)
-    }
-  }
-
-  const stopRecording = () => {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop()
-      setIsRecording(false)
-    }
+    await startRecording()
   }
 
   // Analyze speech using local comparison
-  const analyzeSpeech = async (transcript: string) => {
-    try {
-      const originalWords = text.toLowerCase().replace(/[.,!?;:'"]/g, '').split(/\s+/).filter(w => w.length > 0)
-      const spokenWords = transcript.toLowerCase().replace(/[.,!?;:'"]/g, '').split(/\s+/).filter(w => w.length > 0)
-      
-      const correctWords: string[] = []
-      const incorrectWords: Array<{ word: string; spokenAs: string; tip: string }> = []
-      const missingWords: string[] = []
-      const extraWords: string[] = []
-      
-      // Simple comparison
-      const spokenSet = new Set(spokenWords)
-      const originalSet = new Set(originalWords)
-      
-      // Find correct and missing words
-      originalWords.forEach(word => {
-        if (spokenSet.has(word)) {
-          correctWords.push(word)
-        } else {
-          missingWords.push(word)
-        }
-      })
-      
-      // Find extra words (spoken but not in original)
-      spokenWords.forEach(word => {
-        if (!originalSet.has(word)) {
-          extraWords.push(word)
-        }
-      })
-      
-      // Calculate score
-      const score = originalWords.length > 0 
-        ? Math.round((correctWords.length / originalWords.length) * 100)
-        : 0
-
-      // Generate pronunciation tips based on missing words
-      const pronunciationTips: string[] = []
-      if (missingWords.length > 0) {
-        pronunciationTips.push(`Practice these words: ${missingWords.slice(0, 3).join(', ')}`)
-      }
-      if (extraWords.length > 0) {
-        pronunciationTips.push(`You added extra words. Try to match the original text exactly.`)
-      }
-      if (score < 70) {
-        pronunciationTips.push(`Try speaking more slowly and clearly.`)
-        pronunciationTips.push(`Listen to the text again before practicing.`)
-      }
-      if (score >= 80) {
-        pronunciationTips.push(`Great job! Keep practicing to maintain your skills.`)
-      }
-
-      // Generate feedback
-      let feedback = ''
-      if (score >= 90) {
-        feedback = `Excellent pronunciation! You said "${transcript}" which matches the original text very well.`
-      } else if (score >= 70) {
-        feedback = `Good effort! You said "${transcript}". You got most of the words right. Keep practicing the words you missed.`
-      } else if (score >= 50) {
-        feedback = `Nice try! You said "${transcript}". Focus on pronouncing each word clearly. Listen again and try to match the rhythm.`
+  const analyzeSpeech = useCallback((transcript: string) => {
+    const originalWords = text.toLowerCase().replace(/[.,!?;:'"]/g, '').split(/\s+/).filter(w => w.length > 0)
+    const spokenWords = transcript.toLowerCase().replace(/[.,!?;:'"]/g, '').split(/\s+/).filter(w => w.length > 0)
+    
+    const correctWords: string[] = []
+    const incorrectWords: Array<{ word: string; spokenAs: string; tip: string }> = []
+    const missingWords: string[] = []
+    const extraWords: string[] = []
+    
+    // Simple comparison
+    const spokenSet = new Set(spokenWords)
+    const originalSet = new Set(originalWords)
+    
+    // Find correct and missing words
+    originalWords.forEach(word => {
+      if (spokenSet.has(word)) {
+        correctWords.push(word)
       } else {
-        feedback = `Keep practicing! You said "${transcript}". Try listening to the text multiple times and speaking more slowly.`
+        missingWords.push(word)
       }
-
-      const result: AnalysisResult = {
-        score,
-        accuracy: `${score}%`,
-        correctWords,
-        incorrectWords,
-        missingWords,
-        extraWords,
-        feedback,
-        pronunciationTips
+    })
+    
+    // Find extra words (spoken but not in original)
+    spokenWords.forEach(word => {
+      if (!originalSet.has(word)) {
+        extraWords.push(word)
       }
+    })
+    
+    // Calculate score
+    const score = originalWords.length > 0 
+      ? Math.round((correctWords.length / originalWords.length) * 100)
+      : 0
 
-      setAnalysisResult(result)
-      setCurrentStep('result')
-      setIsProcessing(false)
-
-    } catch (error) {
-      console.error('Analysis error:', error)
-      setIsProcessing(false)
-      toast({
-        title: 'Error',
-        description: 'Failed to analyze speech',
-        variant: 'destructive',
-      })
+    // Generate pronunciation tips based on missing words
+    const pronunciationTips: string[] = []
+    if (missingWords.length > 0) {
+      pronunciationTips.push(`Practice these words: ${missingWords.slice(0, 3).join(', ')}`)
     }
-  }
+    if (extraWords.length > 0) {
+      pronunciationTips.push(`You added extra words. Try to match the original text exactly.`)
+    }
+    if (score < 70) {
+      pronunciationTips.push(`Try speaking more slowly and clearly.`)
+      pronunciationTips.push(`Listen to the text again before practicing.`)
+    }
+    if (score >= 80) {
+      pronunciationTips.push(`Great job! Keep practicing to maintain your skills.`)
+    }
+
+    // Generate feedback
+    let feedback = ''
+    if (score >= 90) {
+      feedback = `Excellent pronunciation! You said "${transcript}" which matches the original text very well.`
+    } else if (score >= 70) {
+      feedback = `Good effort! You said "${transcript}". You got most of the words right. Keep practicing the words you missed.`
+    } else if (score >= 50) {
+      feedback = `Nice try! You said "${transcript}". Focus on pronouncing each word clearly. Listen again and try to match the rhythm.`
+    } else {
+      feedback = `Keep practicing! You said "${transcript}". Try listening to the text multiple times and speaking more slowly.`
+    }
+
+    const result: AnalysisResult = {
+      score,
+      accuracy: `${score}%`,
+      correctWords,
+      incorrectWords,
+      missingWords,
+      extraWords,
+      feedback,
+      pronunciationTips
+    }
+
+    setAnalysisResult(result)
+    setCurrentStep('result')
+  }, [text])
 
   const resetPractice = () => {
     setCurrentStep('input')
@@ -501,7 +448,7 @@ export default function Home() {
                     &ldquo;{text}&rdquo;
                   </p>
                   <Button
-                    onClick={isRecording ? stopRecording : startRecording}
+                    onClick={isRecording ? stopRecording : handleStartRecording}
                     className={`px-8 py-4 ${
                       isRecording 
                         ? 'bg-red-500 hover:bg-red-600 animate-pulse' 
@@ -511,8 +458,16 @@ export default function Home() {
                     {isRecording ? '⏹️ Stop Speaking' : '🎙️ Start Speaking'}
                   </Button>
                   {isRecording && (
-                    <p className="text-sm text-gray-500 mt-2 animate-pulse">
-                      🎧 Listening... Speak now!
+                    <div className="text-sm text-gray-500 mt-2 animate-pulse">
+                      <p>🎧 Listening... Speak now!</p>
+                      {recognitionMethod === 'server-asr' && (
+                        <p className="text-xs text-blue-500 mt-1">📡 Recording audio for analysis...</p>
+                      )}
+                    </div>
+                  )}
+                  {isProcessing && (
+                    <p className="text-sm text-blue-500 mt-2">
+                      ⚙️ Processing your speech...
                     </p>
                   )}
                 </CardContent>
@@ -678,13 +633,19 @@ export default function Home() {
             </Card>
           )}
 
-          {/* Browser Support Warning */}
-          {currentStep === 'speak' && !speechSupported && (
-            <Card className="bg-red-50 dark:bg-red-900/20 border-0">
+          {/* Platform Info */}
+          {currentStep === 'speak' && (
+            <Card className="bg-blue-50 dark:bg-blue-900/20 border-0">
               <CardContent className="p-4">
-                <p className="text-sm text-red-800 dark:text-red-200">
-                  ⚠️ <strong>Warning:</strong> Speech recognition is not supported in this browser. Please use Chrome or Edge for the best experience.
-                </p>
+                <div className="text-sm text-blue-800 dark:text-blue-200">
+                  <p><strong>Platform:</strong> {platform === 'ios' ? 'iOS/iPadOS' : platform === 'android' ? 'Android' : platform === 'macos' ? 'macOS' : platform === 'windows' ? 'Windows' : 'Desktop'}</p>
+                  <p><strong>Recognition Method:</strong> {recognitionMethod === 'web-speech' ? 'Web Speech API' : 'Server ASR (Audio Upload)'}</p>
+                  {!speechSupported && (
+                    <p className="text-red-600 dark:text-red-400 mt-2">
+                      ⚠️ Speech recognition not supported. Please use a modern browser.
+                    </p>
+                  )}
+                </div>
               </CardContent>
             </Card>
           )}
