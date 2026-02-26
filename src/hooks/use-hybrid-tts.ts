@@ -42,15 +42,11 @@ export const useHybridTTS = (): UseHybridTTSHook => {
   useEffect(() => {
     const detectedPlatform = detectPlatform()
     setPlatform(detectedPlatform)
+    
+    console.log('TTS: Platform detected:', detectedPlatform)
 
-    // iOS needs server-side TTS
-    if (detectedPlatform === 'ios') {
-      setMethod('server-tts')
-      setVoicesLoaded(true) // Server TTS doesn't need voices
-    } else {
-      setMethod('web-speech')
-      initWebSpeech()
-    }
+    // Try Web Speech API first (works on iOS too in some cases)
+    initWebSpeech()
 
     // Cleanup
     return () => {
@@ -71,9 +67,11 @@ export const useHybridTTS = (): UseHybridTTSHook => {
 
     const loadVoices = () => {
       const availableVoices = synthRef.current?.getVoices() || []
+      console.log('TTS: Loaded voices:', availableVoices.length)
       if (availableVoices.length > 0) {
         voicesRef.current = availableVoices
         setVoicesLoaded(true)
+        setMethod('web-speech')
       }
     }
 
@@ -84,12 +82,20 @@ export const useHybridTTS = (): UseHybridTTSHook => {
       synthRef.current.onvoiceschanged = loadVoices
     }
 
-    // Fallback polling
+    // Fallback polling - iOS can take time to load voices
+    let attempts = 0
+    const maxAttempts = 50
     const interval = setInterval(() => {
+      attempts++
       const v = synthRef.current?.getVoices()
+      console.log(`TTS: Polling voices attempt ${attempts}:`, v?.length || 0)
       if (v && v.length > 0) {
         voicesRef.current = v
         setVoicesLoaded(true)
+        setMethod('web-speech')
+        clearInterval(interval)
+      } else if (attempts >= maxAttempts) {
+        console.log('TTS: Max attempts reached, voices not loaded')
         clearInterval(interval)
       }
     }, 100)
@@ -100,141 +106,47 @@ export const useHybridTTS = (): UseHybridTTSHook => {
 
   const getVoice = useCallback((gender: 'male' | 'female'): SpeechSynthesisVoice | null => {
     const voices = voicesRef.current
+    console.log('TTS: Getting voice from', voices.length, 'voices, gender:', gender)
     if (voices.length === 0) return null
 
+    // First try to find English voices
     const englishVoices = voices.filter(v => v.lang.startsWith('en'))
-    if (englishVoices.length === 0) return voices[0]
+    console.log('TTS: English voices:', englishVoices.map(v => v.name))
+    
+    if (englishVoices.length === 0) {
+      console.log('TTS: No English voices, using first available')
+      return voices[0]
+    }
 
-    const maleKeywords = ['daniel', 'george', 'guy', 'male', 'man', 'james', 'david', 'michael', 'mark', 'tom', 'arthur', 'brian', 'richard']
-    const femaleKeywords = ['samantha', 'victoria', 'karen', 'female', 'woman', 'siri', 'zira', 'susan', 'hazel', 'emma', 'sophie', 'olivia', 'moira', 'tessa', 'fiona', 'alice', 'kate', 'molly', 'ellen']
+    // Keywords for voice matching
+    const maleKeywords = ['daniel', 'george', 'guy', 'male', 'man', 'james', 'david', 'michael', 'mark', 'tom', 'arthur', 'brian', 'richard', 'fred', 'ralph', 'alex']
+    const femaleKeywords = ['samantha', 'victoria', 'karen', 'female', 'woman', 'siri', 'zira', 'susan', 'hazel', 'emma', 'sophie', 'olivia', 'moira', 'tessa', 'fiona', 'alice', 'kate', 'molly', 'ellen', 'siri']
 
     const keywords = gender === 'male' ? maleKeywords : femaleKeywords
 
+    // Try to find matching voice
     for (const keyword of keywords) {
       const found = englishVoices.find(v => 
         v.name.toLowerCase().includes(keyword)
       )
-      if (found) return found
+      if (found) {
+        console.log('TTS: Found voice:', found.name)
+        return found
+      }
     }
 
-    const index = gender === 'male' ? Math.min(1, englishVoices.length - 1) : 0
-    return englishVoices[index] || englishVoices[0]
+    // Fallback: use first English voice
+    const fallback = englishVoices[0]
+    console.log('TTS: Using fallback voice:', fallback.name)
+    return fallback
   }, [])
 
-  const speakWithServerTTS = useCallback(async (text: string, speed: number = 1.0) => {
-    let audioUrl: string | null = null
-    
-    try {
-      setIsLoading(true)
-      console.log('TTS: Requesting audio for:', text.substring(0, 50))
+  const speakWithWebSpeech = useCallback((text: string, speed: number = 1.0, gender: 'male' | 'female' = 'female'): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      console.log('TTS: speakWithWebSpeech called')
       
-      // Call server TTS API
-      const response = await fetch('/api/tts', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          text: text,
-          speed: speed,
-          voice: 'tongtong'
-        })
-      })
-
-      console.log('TTS: Response status:', response.status)
-      
-      // Check if response is JSON (error) or audio
-      const contentType = response.headers.get('content-type') || ''
-      console.log('TTS: Content-Type:', contentType)
-      
-      if (!response.ok) {
-        // Try to parse error message
-        let errorMessage = 'TTS request failed'
-        if (contentType.includes('application/json')) {
-          const errorData = await response.json()
-          errorMessage = errorData.error || errorMessage
-        }
-        throw new Error(errorMessage)
-      }
-
-      // Check if we got audio
-      if (!contentType.includes('audio')) {
-        throw new Error(`Invalid response type: ${contentType}`)
-      }
-
-      // Get audio blob
-      const audioBlob = await response.blob()
-      console.log('TTS: Audio blob size:', audioBlob.size, 'type:', audioBlob.type)
-      
-      if (audioBlob.size < 100) {
-        throw new Error('Audio data too small')
-      }
-
-      audioUrl = URL.createObjectURL(audioBlob)
-
-      // Create and play audio
-      const audio = new Audio()
-      audioRef.current = audio
-      
-      // Set up event handlers before loading
-      return new Promise<void>((resolve, reject) => {
-        audio.oncanplaythrough = () => {
-          console.log('TTS: Audio can play through')
-        }
-        
-        audio.onplay = () => {
-          console.log('TTS: Audio started playing')
-          setIsSpeaking(true)
-          setIsLoading(false)
-        }
-
-        audio.onended = () => {
-          console.log('TTS: Audio ended')
-          setIsSpeaking(false)
-          if (audioUrl) {
-            URL.revokeObjectURL(audioUrl)
-          }
-          audioRef.current = null
-          resolve()
-        }
-
-        audio.onerror = (e) => {
-          console.error('TTS: Audio error:', e)
-          setIsSpeaking(false)
-          setIsLoading(false)
-          if (audioUrl) {
-            URL.revokeObjectURL(audioUrl)
-          }
-          audioRef.current = null
-          reject(new Error('Failed to play audio'))
-        }
-
-        // Load and play
-        audio.src = audioUrl
-        audio.load()
-        
-        audio.play().catch(err => {
-          console.error('TTS: Play error:', err)
-          setIsSpeaking(false)
-          setIsLoading(false)
-          reject(new Error('Failed to play audio: ' + (err.message || 'Unknown error')))
-        })
-      })
-
-    } catch (error) {
-      console.error('Server TTS error:', error)
-      setIsSpeaking(false)
-      setIsLoading(false)
-      if (audioUrl) {
-        URL.revokeObjectURL(audioUrl)
-      }
-      throw error
-    }
-  }, [])
-
-  const speakWithWebSpeech = useCallback((text: string, speed: number = 1.0, gender: 'male' | 'female' = 'female') => {
-    return new Promise<void>((resolve, reject) => {
       if (!synthRef.current) {
+        console.error('TTS: speechSynthesis not available')
         reject(new Error('Speech synthesis not available'))
         return
       }
@@ -242,35 +154,55 @@ export const useHybridTTS = (): UseHybridTTSHook => {
       // Cancel any ongoing speech
       synthRef.current.cancel()
 
-      const utterance = new SpeechSynthesisUtterance(text.trim())
-      const voice = getVoice(gender)
-      
-      if (voice) {
-        utterance.voice = voice
-        utterance.lang = voice.lang
-      } else {
-        utterance.lang = 'en-US'
-      }
-      
-      utterance.pitch = gender === 'female' ? 1.1 : 0.9
-      utterance.rate = speed
+      // Wait a bit for cancel to take effect
+      setTimeout(() => {
+        const utterance = new SpeechSynthesisUtterance(text.trim())
+        const voice = getVoice(gender)
+        
+        if (voice) {
+          utterance.voice = voice
+          utterance.lang = voice.lang
+        } else {
+          utterance.lang = 'en-US'
+        }
+        
+        utterance.pitch = gender === 'female' ? 1.1 : 0.9
+        utterance.rate = speed
+        utterance.volume = 1.0
 
-      utterance.onstart = () => {
-        setIsSpeaking(true)
-      }
+        utterance.onstart = () => {
+          console.log('TTS: Speech started')
+          setIsSpeaking(true)
+          setIsLoading(false)
+        }
 
-      utterance.onend = () => {
-        setIsSpeaking(false)
-        resolve()
-      }
+        utterance.onend = () => {
+          console.log('TTS: Speech ended')
+          setIsSpeaking(false)
+          resolve()
+        }
 
-      utterance.onerror = (event) => {
-        setIsSpeaking(false)
-        reject(new Error(event.error))
-      }
+        utterance.onerror = (event) => {
+          console.error('TTS: Speech error:', event.error)
+          setIsSpeaking(false)
+          
+          // If Web Speech fails, we could try server TTS here
+          // For now, just reject
+          reject(new Error(event.error || 'Speech synthesis error'))
+        }
 
-      currentUtteranceRef.current = utterance
-      synthRef.current.speak(utterance)
+        currentUtteranceRef.current = utterance
+        
+        console.log('TTS: Calling speak()')
+        synthRef.current.speak(utterance)
+        
+        // iOS Safari hack: sometimes speak() doesn't work without this
+        // Resume if paused
+        if (synthRef.current.paused) {
+          console.log('TTS: Resuming paused synthesis')
+          synthRef.current.resume()
+        }
+      }, 50)
     })
   }, [getVoice])
 
@@ -285,23 +217,36 @@ export const useHybridTTS = (): UseHybridTTSHook => {
       throw new Error('Empty text')
     }
 
-    if (method === 'server-tts') {
-      await speakWithServerTTS(trimmedText, speed)
+    console.log('TTS: speak() called, method:', method, 'voicesLoaded:', voicesLoaded)
+
+    // Always try Web Speech API first
+    if (synthRef.current && voicesRef.current.length > 0) {
+      console.log('TTS: Using Web Speech API')
+      try {
+        await speakWithWebSpeech(trimmedText, speed, gender)
+        return
+      } catch (error) {
+        console.error('TTS: Web Speech failed:', error)
+        throw error
+      }
     } else {
-      await speakWithWebSpeech(trimmedText, speed, gender)
+      console.error('TTS: No voices available')
+      throw new Error('Speech synthesis not ready. Please refresh the page.')
     }
-  }, [method, speakWithServerTTS, speakWithWebSpeech])
+  }, [method, voicesLoaded, speakWithWebSpeech])
 
   const stop = useCallback(() => {
-    if (method === 'web-speech' && synthRef.current) {
+    console.log('TTS: stop() called')
+    if (synthRef.current) {
       synthRef.current.cancel()
     }
-    if (method === 'server-tts' && audioRef.current) {
+    if (audioRef.current) {
       audioRef.current.pause()
       audioRef.current = null
     }
     setIsSpeaking(false)
-  }, [method])
+    setIsLoading(false)
+  }, [])
 
   return {
     speak,
