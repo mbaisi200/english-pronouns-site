@@ -114,10 +114,30 @@ export default function Home() {
     await startRecording()
   }
 
+  // Normalize text for comparison (remove accents, punctuation, lowercase)
+  const normalizeText = (input: string): string[] => {
+    return input
+      .toLowerCase()
+      .normalize('NFKD') // Decompose accented characters
+      .replace(/[\u0300-\u036f]/g, '') // Remove accent marks
+      .replace(/[^a-z0-9\s]/g, '') // Remove non-alphanumeric (keep spaces)
+      .replace(/\s+/g, ' ') // Normalize multiple spaces
+      .trim()
+      .split(' ')
+      .filter(w => w.length > 0)
+  }
+
   // Analyze speech using local comparison
   const analyzeSpeech = useCallback((transcript: string) => {
-    const originalWords = text.toLowerCase().replace(/[.,!?;:'"]/g, '').split(/\s+/).filter(w => w.length > 0)
-    const spokenWords = transcript.toLowerCase().replace(/[.,!?;:'"]/g, '').split(/\s+/).filter(w => w.length > 0)
+    console.log('Analyzing speech:')
+    console.log('Original text:', text)
+    console.log('Transcript:', transcript)
+    
+    const originalWords = normalizeText(text)
+    const spokenWords = normalizeText(transcript)
+    
+    console.log('Original words:', originalWords)
+    console.log('Spoken words:', spokenWords)
     
     const correctWords: string[] = []
     const incorrectWords: Array<{ word: string; spokenAs: string; tip: string }> = []

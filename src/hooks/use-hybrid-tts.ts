@@ -46,6 +46,7 @@ export const useHybridTTS = (): UseHybridTTSHook => {
     // iOS needs server-side TTS
     if (detectedPlatform === 'ios') {
       setMethod('server-tts')
+      setVoicesLoaded(true) // Server TTS doesn't need voices
     } else {
       setMethod('web-speech')
       initWebSpeech()
@@ -121,8 +122,11 @@ export const useHybridTTS = (): UseHybridTTSHook => {
   }, [])
 
   const speakWithServerTTS = useCallback(async (text: string, speed: number = 1.0) => {
+    let audioUrl: string | null = null
+    
     try {
       setIsLoading(true)
+      console.log('TTS: Requesting audio for:', text.substring(0, 50))
       
       // Call server TTS API
       const response = await fetch('/api/tts', {
@@ -133,46 +137,97 @@ export const useHybridTTS = (): UseHybridTTSHook => {
         body: JSON.stringify({
           text: text,
           speed: speed,
-          voice: 'tongtong' // Server TTS voice
+          voice: 'tongtong'
         })
       })
 
+      console.log('TTS: Response status:', response.status)
+      
+      // Check if response is JSON (error) or audio
+      const contentType = response.headers.get('content-type') || ''
+      console.log('TTS: Content-Type:', contentType)
+      
       if (!response.ok) {
-        throw new Error('TTS request failed')
+        // Try to parse error message
+        let errorMessage = 'TTS request failed'
+        if (contentType.includes('application/json')) {
+          const errorData = await response.json()
+          errorMessage = errorData.error || errorMessage
+        }
+        throw new Error(errorMessage)
+      }
+
+      // Check if we got audio
+      if (!contentType.includes('audio')) {
+        throw new Error(`Invalid response type: ${contentType}`)
       }
 
       // Get audio blob
       const audioBlob = await response.blob()
-      const audioUrl = URL.createObjectURL(audioBlob)
+      console.log('TTS: Audio blob size:', audioBlob.size, 'type:', audioBlob.type)
+      
+      if (audioBlob.size < 100) {
+        throw new Error('Audio data too small')
+      }
+
+      audioUrl = URL.createObjectURL(audioBlob)
 
       // Create and play audio
-      const audio = new Audio(audioUrl)
+      const audio = new Audio()
       audioRef.current = audio
+      
+      // Set up event handlers before loading
+      return new Promise<void>((resolve, reject) => {
+        audio.oncanplaythrough = () => {
+          console.log('TTS: Audio can play through')
+        }
+        
+        audio.onplay = () => {
+          console.log('TTS: Audio started playing')
+          setIsSpeaking(true)
+          setIsLoading(false)
+        }
 
-      audio.onplay = () => {
-        setIsSpeaking(true)
-        setIsLoading(false)
-      }
+        audio.onended = () => {
+          console.log('TTS: Audio ended')
+          setIsSpeaking(false)
+          if (audioUrl) {
+            URL.revokeObjectURL(audioUrl)
+          }
+          audioRef.current = null
+          resolve()
+        }
 
-      audio.onended = () => {
-        setIsSpeaking(false)
-        URL.revokeObjectURL(audioUrl)
-        audioRef.current = null
-      }
+        audio.onerror = (e) => {
+          console.error('TTS: Audio error:', e)
+          setIsSpeaking(false)
+          setIsLoading(false)
+          if (audioUrl) {
+            URL.revokeObjectURL(audioUrl)
+          }
+          audioRef.current = null
+          reject(new Error('Failed to play audio'))
+        }
 
-      audio.onerror = () => {
-        setIsSpeaking(false)
-        setIsLoading(false)
-        URL.revokeObjectURL(audioUrl)
-        audioRef.current = null
-      }
-
-      await audio.play()
+        // Load and play
+        audio.src = audioUrl
+        audio.load()
+        
+        audio.play().catch(err => {
+          console.error('TTS: Play error:', err)
+          setIsSpeaking(false)
+          setIsLoading(false)
+          reject(new Error('Failed to play audio: ' + (err.message || 'Unknown error')))
+        })
+      })
 
     } catch (error) {
       console.error('Server TTS error:', error)
       setIsSpeaking(false)
       setIsLoading(false)
+      if (audioUrl) {
+        URL.revokeObjectURL(audioUrl)
+      }
       throw error
     }
   }, [])
