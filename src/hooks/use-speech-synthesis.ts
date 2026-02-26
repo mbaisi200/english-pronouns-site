@@ -28,105 +28,76 @@ export const useSpeechSynthesis = (): UseSpeechSynthesisReturn => {
 
   const synthRef = useRef<SpeechSynthesis | null>(null)
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
-  const loadAttemptsRef = useRef(0)
-  const maxAttemptsRef = useRef(50)
 
-  // Carregar vozes com retry
-  const loadVoices = useCallback(() => {
-    if (typeof window === 'undefined') {
-      setError('Web Speech API não está disponível')
-      setIsLoading(false)
+  // Load voices on mount
+  useEffect(() => {
+    const isBrowser = typeof window !== 'undefined'
+    
+    if (!isBrowser) {
       return
     }
 
-    synthRef.current = window.speechSynthesis
-
-    if (!synthRef.current) {
-      setError('Speech Synthesis não suportado')
-      setIsLoading(false)
+    const synth = window.speechSynthesis
+    if (!synth) {
       return
     }
 
-    const tryLoadVoices = () => {
-      try {
-        const availableVoices = synthRef.current?.getVoices() || []
+    synthRef.current = synth
 
-        if (availableVoices.length > 0) {
-          setVoices(availableVoices)
-          setError(null)
-          setIsLoading(false)
-          loadAttemptsRef.current = 0
-          return true
-        }
-
-        return false
-      } catch (err) {
-        console.error('Erro ao carregar vozes:', err)
-        setError('Erro ao carregar vozes')
+    const loadVoices = () => {
+      const availableVoices = synth.getVoices() || []
+      if (availableVoices.length > 0) {
+        setVoices(availableVoices)
         setIsLoading(false)
-        return false
       }
     }
 
-    // Tentar carregar imediatamente
-    if (tryLoadVoices()) return
+    // Load immediately
+    loadVoices()
 
-    // Configurar listener
-    if (synthRef.current.onvoiceschanged !== undefined) {
-      synthRef.current.onvoiceschanged = tryLoadVoices
-    }
+    // Setup listener for voice changes
+    synth.onvoiceschanged = loadVoices
 
-    // Retry com backoff
+    // Retry mechanism
+    let attempts = 0
+    const maxAttempts = 50
     const retryInterval = setInterval(() => {
-      loadAttemptsRef.current++
-
-      if (tryLoadVoices()) {
-        clearInterval(retryInterval)
-        return
-      }
-
-      if (loadAttemptsRef.current >= maxAttemptsRef.current) {
-        clearInterval(retryInterval)
+      attempts++
+      const availableVoices = synth.getVoices() || []
+      if (availableVoices.length > 0) {
+        setVoices(availableVoices)
         setIsLoading(false)
-        if (voices.length === 0) {
-          setError('Nenhuma voz disponível')
-        }
+        clearInterval(retryInterval)
+      } else if (attempts >= maxAttempts) {
+        setIsLoading(false)
+        clearInterval(retryInterval)
       }
     }, 100)
 
-    return () => clearInterval(retryInterval)
+    return () => {
+      clearInterval(retryInterval)
+      synth.onvoiceschanged = null
+      synth.cancel()
+    }
   }, [])
 
-  // Inicializar ao montar
-  useEffect(() => {
-    const cleanup = loadVoices()
-    return () => {
-      if (cleanup) cleanup()
-      if (synthRef.current) {
-        synthRef.current.cancel()
-      }
-    }
-  }, [loadVoices])
-
-  // Função para falar
+  // Speak function
   const speak = useCallback((options: SpeechSynthesisOptions) => {
     if (!synthRef.current) {
-      setError('Speech Synthesis não disponível')
+      setError('Speech Synthesis not available')
       return
     }
 
     if (!options.text.trim()) {
-      setError('Texto vazio')
+      setError('Empty text')
       return
     }
 
     try {
-      // Cancelar fala anterior
       synthRef.current.cancel()
 
       utteranceRef.current = new SpeechSynthesisUtterance(options.text.trim())
 
-      // Configurar propriedades
       if (options.voice) {
         utteranceRef.current.voice = options.voice
         utteranceRef.current.lang = options.voice.lang
@@ -140,27 +111,23 @@ export const useSpeechSynthesis = (): UseSpeechSynthesisReturn => {
       utteranceRef.current.pitch = options.pitch || 1.0
       utteranceRef.current.volume = Math.max(0, Math.min(1, options.volume || 1.0))
 
-      // Configurar callbacks
       utteranceRef.current.onstart = () => setIsSpeaking(true)
       utteranceRef.current.onend = () => setIsSpeaking(false)
       utteranceRef.current.onpause = () => setIsSpeaking(false)
       utteranceRef.current.onresume = () => setIsSpeaking(true)
-      utteranceRef.current.onerror = (event) => {
-        console.error('Speech synthesis error:', event.error)
-        setError(`Erro: ${event.error}`)
+      utteranceRef.current.onerror = () => {
+        setError('Speech error')
         setIsSpeaking(false)
       }
 
       synthRef.current.speak(utteranceRef.current)
       setError(null)
-    } catch (err) {
-      console.error('Erro ao iniciar fala:', err)
-      setError('Erro ao iniciar reprodução')
+    } catch {
+      setError('Failed to start speech')
       setIsSpeaking(false)
     }
   }, [])
 
-  // Função para parar
   const stop = useCallback(() => {
     if (synthRef.current) {
       synthRef.current.cancel()
@@ -168,7 +135,6 @@ export const useSpeechSynthesis = (): UseSpeechSynthesisReturn => {
     }
   }, [])
 
-  // Função para pausar
   const pause = useCallback(() => {
     if (synthRef.current && synthRef.current.pause) {
       synthRef.current.pause()
@@ -176,7 +142,6 @@ export const useSpeechSynthesis = (): UseSpeechSynthesisReturn => {
     }
   }, [])
 
-  // Função para retomar
   const resume = useCallback(() => {
     if (synthRef.current && synthRef.current.resume) {
       synthRef.current.resume()
