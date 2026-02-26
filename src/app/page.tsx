@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent } from '@/components/ui/card'
@@ -10,6 +10,7 @@ import { useToast } from '@/hooks/use-toast'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { useHybridSpeechRecognition } from '@/hooks/use-hybrid-speech-recognition'
+import { useHybridTTS } from '@/hooks/use-hybrid-tts'
 
 type Step = 'input' | 'listen' | 'speak' | 'result'
 
@@ -27,9 +28,7 @@ interface AnalysisResult {
 export default function Home() {
   const [text, setText] = useState('')
   const [speed, setSpeed] = useState(1.0)
-  const [isSpeaking, setIsSpeaking] = useState(false)
   const [selectedGender, setSelectedGender] = useState<'male' | 'female'>('female')
-  const [voicesLoaded, setVoicesLoaded] = useState(false)
   const [currentStep, setCurrentStep] = useState<Step>('input')
   
   // Recording states
@@ -37,8 +36,17 @@ export default function Home() {
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null)
   
   const { toast } = useToast()
-  const synthRef = useRef<SpeechSynthesis | null>(null)
-  const voicesRef = useRef<SpeechSynthesisVoice[]>([])
+  
+  // Hybrid TTS hook - works on iOS, Android, and desktop
+  const {
+    speak: speakText,
+    stop: stopTTS,
+    isSpeaking,
+    isLoading: ttsLoading,
+    voicesLoaded,
+    platform,
+    method: ttsMethod
+  } = useHybridTTS()
   
   // Hybrid speech recognition hook - works on iOS, Android, and desktop
   const {
@@ -47,8 +55,7 @@ export default function Home() {
     isSupported: speechSupported,
     method: recognitionMethod,
     startRecording,
-    stopRecording,
-    platform
+    stopRecording
   } = useHybridSpeechRecognition({
     language: 'en-US',
     onResult: (result) => {
@@ -69,69 +76,7 @@ export default function Home() {
     }
   })
 
-  // Load voices
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      synthRef.current = window.speechSynthesis
-      
-      const loadVoices = () => {
-        const availableVoices = synthRef.current?.getVoices() || []
-        if (availableVoices.length > 0) {
-          voicesRef.current = availableVoices
-          setVoicesLoaded(true)
-        }
-      }
-
-      loadVoices()
-      
-      if (synthRef.current.onvoiceschanged !== undefined) {
-        synthRef.current.onvoiceschanged = loadVoices
-      }
-
-      const interval = setInterval(() => {
-        const v = synthRef.current?.getVoices()
-        if (v && v.length > 0) {
-          voicesRef.current = v
-          setVoicesLoaded(true)
-        }
-      }, 200)
-
-      return () => {
-        clearInterval(interval)
-        if (synthRef.current) {
-          synthRef.current.cancel()
-        }
-      }
-    }
-  }, [])
-
-
-
-  // Find best voice for gender
-  const getVoice = (gender: 'male' | 'female'): SpeechSynthesisVoice | null => {
-    const voices = voicesRef.current
-    if (voices.length === 0) return null
-
-    const englishVoices = voices.filter(v => v.lang.startsWith('en'))
-    if (englishVoices.length === 0) return voices[0]
-
-    const maleKeywords = ['daniel', 'george', 'guy', 'male', 'man', 'james', 'david', 'michael', 'mark', 'tom', 'arthur', 'brian', 'richard']
-    const femaleKeywords = ['samantha', 'victoria', 'karen', 'female', 'woman', 'siri', 'zira', 'susan', 'hazel', 'emma', 'sophie', 'olivia', 'moira', 'tessa', 'fiona', 'alice', 'kate', 'molly', 'ellen']
-
-    const keywords = gender === 'male' ? maleKeywords : femaleKeywords
-
-    for (const keyword of keywords) {
-      const found = englishVoices.find(v => 
-        v.name.toLowerCase().includes(keyword)
-      )
-      if (found) return found
-    }
-
-    const index = gender === 'male' ? Math.min(1, englishVoices.length - 1) : 0
-    return englishVoices[index] || englishVoices[0]
-  }
-
-  const speak = () => {
+  const speak = async () => {
     if (!text.trim()) {
       toast({
         title: 'Error',
@@ -141,46 +86,25 @@ export default function Home() {
       return
     }
 
-    if (!synthRef.current) {
+    try {
+      setCurrentStep('listen')
+      await speakText(text, { speed, gender: selectedGender })
+      // After speaking completes, move to speak step
+      setCurrentStep('speak')
+    } catch (error) {
+      console.error('TTS error:', error)
       toast({
         title: 'Error',
-        description: 'Speech not supported',
+        description: 'Failed to play audio. Please try again.',
         variant: 'destructive',
       })
-      return
+      setCurrentStep('input')
     }
-
-    synthRef.current.cancel()
-
-    const utterance = new SpeechSynthesisUtterance(text.trim())
-    const voice = getVoice(selectedGender)
-    
-    if (voice) {
-      utterance.voice = voice
-      utterance.lang = voice.lang
-    } else {
-      utterance.lang = 'en-US'
-    }
-    
-    utterance.pitch = selectedGender === 'female' ? 1.1 : 0.9
-    utterance.rate = speed
-
-    utterance.onstart = () => setIsSpeaking(true)
-    utterance.onend = () => {
-      setIsSpeaking(false)
-      setCurrentStep('speak')
-    }
-    utterance.onerror = () => setIsSpeaking(false)
-
-    synthRef.current.speak(utterance)
-    setCurrentStep('listen')
   }
 
   const stop = () => {
-    if (synthRef.current) {
-      synthRef.current.cancel()
-      setIsSpeaking(false)
-    }
+    stopTTS()
+    setCurrentStep('input')
   }
 
   // Handle recording start (wrapper for the hook)
@@ -286,6 +210,8 @@ export default function Home() {
     return 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
   }
 
+  const isReadyToSpeak = platform === 'ios' ? true : voicesLoaded
+
   return (
     <main className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
       <div className="container mx-auto px-4 py-8 max-w-2xl">
@@ -350,7 +276,7 @@ export default function Home() {
                 <CardContent className="p-4">
                   <Label className="font-semibold mb-3 block">Choose a Voice</Label>
                   <div className="grid grid-cols-2 gap-3">
-                    <button
+                <button
                       onClick={() => setSelectedGender('female')}
                       className={`p-4 rounded-xl border-2 transition-all ${
                         selectedGender === 'female'
@@ -403,11 +329,21 @@ export default function Home() {
               {/* Speak Button */}
               <Button
                 onClick={speak}
-                disabled={!text.trim() || !voicesLoaded}
+                disabled={!text.trim() || ttsLoading}
                 className="w-full py-6 text-xl font-semibold shadow-lg bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600"
               >
-                🔊 Listen to Text
+                {ttsLoading ? '⏳ Loading...' : '🔊 Listen to Text'}
               </Button>
+              
+              {/* Platform Info */}
+              <Card className="bg-blue-50 dark:bg-blue-900/20 border-0">
+                <CardContent className="p-4">
+                  <div className="text-sm text-blue-800 dark:text-blue-200">
+                    <p><strong>Platform:</strong> {platform === 'ios' ? 'iOS/iPadOS' : platform === 'android' ? 'Android' : platform === 'macos' ? 'macOS' : platform === 'windows' ? 'Windows' : 'Desktop'}</p>
+                    <p><strong>Audio Method:</strong> {ttsMethod === 'web-speech' ? 'Web Speech API' : 'Server TTS (Audio Stream)'}</p>
+                  </div>
+                </CardContent>
+              </Card>
             </>
           )}
 
@@ -420,8 +356,12 @@ export default function Home() {
                 <p className="text-gray-600 dark:text-gray-300 mb-4">
                   &ldquo;{text}&rdquo;
                 </p>
+                {ttsLoading && (
+                  <p className="text-blue-500 mb-4">⏳ Loading audio...</p>
+                )}
                 <Button
                   onClick={isSpeaking ? stop : speak}
+                  disabled={ttsLoading}
                   className={`px-8 py-4 ${
                     isSpeaking 
                       ? 'bg-red-500 hover:bg-red-600' 
@@ -485,6 +425,7 @@ export default function Home() {
               <Button
                 variant="outline"
                 onClick={speak}
+                disabled={ttsLoading}
                 className="w-full py-4"
               >
                 🔊 Listen Again
@@ -633,7 +574,7 @@ export default function Home() {
             </Card>
           )}
 
-          {/* Platform Info */}
+          {/* Platform Info during speak step */}
           {currentStep === 'speak' && (
             <Card className="bg-blue-50 dark:bg-blue-900/20 border-0">
               <CardContent className="p-4">
