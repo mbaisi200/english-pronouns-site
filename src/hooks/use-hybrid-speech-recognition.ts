@@ -54,6 +54,64 @@ const isMediaRecorderAvailable = (): boolean => {
   return !!window.MediaRecorder
 }
 
+// Convert audio blob to WAV format using Web Audio API
+const convertToWav = async (audioBlob: Blob): Promise<Blob> => {
+  try {
+    const arrayBuffer = await audioBlob.arrayBuffer()
+    const audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)({
+      sampleRate: 16000
+    })
+    
+    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
+    
+    // Get audio data
+    const numberOfChannels = 1 // Mono
+    const length = audioBuffer.length
+    const sampleRate = audioBuffer.sampleRate
+    
+    // Create WAV buffer
+    const wavBuffer = new ArrayBuffer(44 + length * 2)
+    const view = new DataView(wavBuffer)
+    
+    // WAV header
+    const writeString = (offset: number, string: string) => {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i))
+      }
+    }
+    
+    writeString(0, 'RIFF')
+    view.setUint32(4, 36 + length * 2, true)
+    writeString(8, 'WAVE')
+    writeString(12, 'fmt ')
+    view.setUint32(16, 16, true) // Subchunk1Size
+    view.setUint16(20, 1, true) // AudioFormat (PCM)
+    view.setUint16(22, numberOfChannels, true)
+    view.setUint32(24, sampleRate, true)
+    view.setUint32(28, sampleRate * numberOfChannels * 2, true) // ByteRate
+    view.setUint16(32, numberOfChannels * 2, true) // BlockAlign
+    view.setUint16(34, 16, true) // BitsPerSample
+    writeString(36, 'data')
+    view.setUint32(40, length * 2, true)
+    
+    // Write audio data (convert float to 16-bit PCM)
+    const channelData = audioBuffer.getChannelData(0)
+    let offset = 44
+    for (let i = 0; i < length; i++) {
+      const sample = Math.max(-1, Math.min(1, channelData[i]))
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true)
+      offset += 2
+    }
+    
+    await audioContext.close()
+    
+    return new Blob([wavBuffer], { type: 'audio/wav' })
+  } catch (error) {
+    console.error('Error converting to WAV:', error)
+    throw error
+  }
+}
+
 export const useHybridSpeechRecognition = (
   options: HybridSpeechRecognitionOptions = {}
 ): UseHybridSpeechRecognitionReturn => {
@@ -70,6 +128,7 @@ export const useHybridSpeechRecognition = (
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
   const streamRef = useRef<MediaStream | null>(null)
+  const mimeTypeRef = useRef<string>('audio/webm')
 
   // Initialize on mount
   useEffect(() => {
@@ -198,26 +257,48 @@ export const useHybridSpeechRecognition = (
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
-          sampleRate: 16000
+          sampleRate: 16000,
+          channelCount: 1
         }
       })
 
       streamRef.current = stream
       audioChunksRef.current = []
 
-      // Determine best MIME type
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : MediaRecorder.isTypeSupported('audio/webm')
-          ? 'audio/webm'
-          : MediaRecorder.isTypeSupported('audio/mp4')
-            ? 'audio/mp4'
-            : 'audio/wav'
+      // Determine best MIME type - prefer formats that work well with ASR
+      let mimeType = ''
+      
+      // Try different formats in order of preference
+      const mimeTypes = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4',
+        'audio/ogg;codecs=opus',
+        'audio/wav'
+      ]
+      
+      for (const type of mimeTypes) {
+        if (MediaRecorder.isTypeSupported(type)) {
+          mimeType = type
+          break
+        }
+      }
+      
+      if (!mimeType) {
+        // Fallback - let browser choose
+        mimeType = ''
+      }
+      
+      mimeTypeRef.current = mimeType
+      console.log('Using MIME type:', mimeType || 'default')
 
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType,
-        audioBitsPerSecond: 128000
-      })
+      const mediaRecorderOptions: MediaRecorderOptions = {}
+      if (mimeType) {
+        mediaRecorderOptions.mimeType = mimeType
+      }
+      mediaRecorderOptions.audioBitsPerSecond = 128000
+
+      const mediaRecorder = new MediaRecorder(stream, mediaRecorderOptions)
 
       mediaRecorderRef.current = mediaRecorder
 
@@ -240,7 +321,12 @@ export const useHybridSpeechRecognition = (
         stream.getTracks().forEach(track => track.stop())
 
         // Process audio
-        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType })
+        const audioBlob = new Blob(audioChunksRef.current, { 
+          type: mimeTypeRef.current || 'audio/webm' 
+        })
+        
+        console.log('Audio blob size:', audioBlob.size, 'type:', audioBlob.type)
+        
         await processAudioWithServerASR(audioBlob)
 
         setIsProcessing(false)
@@ -273,14 +359,39 @@ export const useHybridSpeechRecognition = (
 
   const processAudioWithServerASR = async (audioBlob: Blob) => {
     try {
+      console.log('Processing audio, original size:', audioBlob.size, 'type:', audioBlob.type)
+      
+      // Convert to WAV for better compatibility with ASR
+      let wavBlob: Blob
+      try {
+        wavBlob = await convertToWav(audioBlob)
+        console.log('Converted to WAV, size:', wavBlob.size)
+      } catch (conversionError) {
+        console.warn('Could not convert to WAV, using original:', conversionError)
+        wavBlob = audioBlob
+      }
+      
       // Convert to base64
-      const arrayBuffer = await audioBlob.arrayBuffer()
-      const base64 = btoa(
-        new Uint8Array(arrayBuffer).reduce(
-          (data, byte) => data + String.fromCharCode(byte),
-          ''
-        )
-      )
+      const arrayBuffer = await wavBlob.arrayBuffer()
+      
+      // Use FileReader for better binary handling
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => {
+          const dataUrl = reader.result as string
+          // Extract base64 part from data URL
+          const base64Part = dataUrl.split(',')[1]
+          if (base64Part) {
+            resolve(base64Part)
+          } else {
+            reject(new Error('Failed to extract base64'))
+          }
+        }
+        reader.onerror = () => reject(new Error('FileReader failed'))
+        reader.readAsDataURL(wavBlob)
+      })
+
+      console.log('Base64 length:', base64.length)
 
       // Send to server ASR
       const response = await fetch('/api/asr', {
@@ -293,11 +404,12 @@ export const useHybridSpeechRecognition = (
         })
       })
 
-      if (!response.ok) {
-        throw new Error('ASR request failed')
-      }
-
       const data = await response.json()
+      console.log('ASR response:', data)
+
+      if (!response.ok) {
+        throw new Error(data.error || `ASR request failed with status ${response.status}`)
+      }
 
       if (data.success && data.transcription) {
         setTranscript(data.transcription)
