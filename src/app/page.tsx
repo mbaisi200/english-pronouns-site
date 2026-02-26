@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent } from '@/components/ui/card'
@@ -25,6 +25,21 @@ interface AnalysisResult {
   pronunciationTips: string[]
 }
 
+// Normalize text for comparison (remove accents, punctuation, lowercase)
+const normalizeText = (input: string): string[] => {
+  if (!input || typeof input !== 'string') return []
+  
+  return input
+    .toLowerCase()
+    .normalize('NFKD') // Decompose accented characters
+    .replace(/[\u0300-\u036f]/g, '') // Remove accent marks
+    .replace(/[^a-z0-9\s]/g, '') // Remove non-alphanumeric (keep spaces)
+    .replace(/\s+/g, ' ') // Normalize multiple spaces
+    .trim()
+    .split(' ')
+    .filter(w => w.length > 0)
+}
+
 export default function Home() {
   const [text, setText] = useState('')
   const [speed, setSpeed] = useState(1.0)
@@ -35,7 +50,15 @@ export default function Home() {
   const [spokenText, setSpokenText] = useState('')
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null)
   
+  // Use ref to always have current text value
+  const textRef = useRef(text)
+  
   const { toast } = useToast()
+  
+  // Keep ref in sync with state
+  useEffect(() => {
+    textRef.current = text
+  }, [text])
   
   // Hybrid TTS hook - works on iOS, Android, and desktop
   const {
@@ -48,7 +71,104 @@ export default function Home() {
     method: ttsMethod
   } = useHybridTTS()
   
-  // Hybrid speech recognition hook - works on iOS, Android, and desktop
+  // Analyze speech - defined before the hook that uses it
+  const analyzeSpeech = useCallback((transcript: string) => {
+    const currentText = textRef.current // Always get current value
+    
+    console.log('=== Analyzing speech ===')
+    console.log('Original text (raw):', currentText)
+    console.log('Transcript (raw):', transcript)
+    
+    const originalWords = normalizeText(currentText)
+    const spokenWords = normalizeText(transcript)
+    
+    console.log('Original words (normalized):', originalWords)
+    console.log('Spoken words (normalized):', spokenWords)
+    console.log('Original words count:', originalWords.length)
+    console.log('Spoken words count:', spokenWords.length)
+    
+    const correctWords: string[] = []
+    const missingWords: string[] = []
+    const extraWords: string[] = []
+    
+    // Use Set for O(1) lookup
+    const spokenSet = new Set(spokenWords)
+    const originalSet = new Set(originalWords)
+    
+    console.log('Spoken Set:', [...spokenSet])
+    console.log('Original Set:', [...originalSet])
+    
+    // Find correct and missing words
+    originalWords.forEach(word => {
+      if (spokenSet.has(word)) {
+        correctWords.push(word)
+        console.log(`✓ Correct: "${word}"`)
+      } else {
+        missingWords.push(word)
+        console.log(`✗ Missing: "${word}"`)
+      }
+    })
+    
+    // Find extra words (spoken but not in original)
+    spokenWords.forEach(word => {
+      if (!originalSet.has(word)) {
+        extraWords.push(word)
+        console.log(`+ Extra: "${word}"`)
+      }
+    })
+    
+    // Calculate score
+    const score = originalWords.length > 0 
+      ? Math.round((correctWords.length / originalWords.length) * 100)
+      : 0
+    
+    console.log(`Score: ${correctWords.length}/${originalWords.length} = ${score}%`)
+
+    // Generate pronunciation tips based on missing words
+    const pronunciationTips: string[] = []
+    if (missingWords.length > 0) {
+      pronunciationTips.push(`Practice these words: ${missingWords.slice(0, 3).join(', ')}`)
+    }
+    if (extraWords.length > 0) {
+      pronunciationTips.push(`You added extra words. Try to match the original text exactly.`)
+    }
+    if (score < 70) {
+      pronunciationTips.push(`Try speaking more slowly and clearly.`)
+      pronunciationTips.push(`Listen to the text again before practicing.`)
+    }
+    if (score >= 80) {
+      pronunciationTips.push(`Great job! Keep practicing to maintain your skills.`)
+    }
+
+    // Generate feedback
+    let feedback = ''
+    if (score >= 90) {
+      feedback = `Excellent pronunciation! You said "${transcript}" which matches the original text very well.`
+    } else if (score >= 70) {
+      feedback = `Good effort! You said "${transcript}". You got most of the words right. Keep practicing the words you missed.`
+    } else if (score >= 50) {
+      feedback = `Nice try! You said "${transcript}". Focus on pronouncing each word clearly. Listen again and try to match the rhythm.`
+    } else {
+      feedback = `Keep practicing! You said "${transcript}". Try listening to the text multiple times and speaking more slowly.`
+    }
+
+    const result: AnalysisResult = {
+      score,
+      accuracy: `${score}%`,
+      correctWords,
+      incorrectWords: [],
+      missingWords,
+      extraWords,
+      feedback,
+      pronunciationTips
+    }
+
+    console.log('=== Final Result ===', result)
+    setAnalysisResult(result)
+    setCurrentStep('result')
+  }, []) // No dependencies - uses ref
+
+  // Hybrid speech recognition hook
   const {
     isRecording,
     isProcessing,
@@ -59,7 +179,7 @@ export default function Home() {
   } = useHybridSpeechRecognition({
     language: 'en-US',
     onResult: (result) => {
-      console.log('Recognition result:', result)
+      console.log('Recognition result received:', result)
       setSpokenText(result.transcript)
       // Analyze the speech after getting result
       analyzeSpeech(result.transcript)
@@ -113,104 +233,6 @@ export default function Home() {
     setAnalysisResult(null)
     await startRecording()
   }
-
-  // Normalize text for comparison (remove accents, punctuation, lowercase)
-  const normalizeText = (input: string): string[] => {
-    return input
-      .toLowerCase()
-      .normalize('NFKD') // Decompose accented characters
-      .replace(/[\u0300-\u036f]/g, '') // Remove accent marks
-      .replace(/[^a-z0-9\s]/g, '') // Remove non-alphanumeric (keep spaces)
-      .replace(/\s+/g, ' ') // Normalize multiple spaces
-      .trim()
-      .split(' ')
-      .filter(w => w.length > 0)
-  }
-
-  // Analyze speech using local comparison
-  const analyzeSpeech = useCallback((transcript: string) => {
-    console.log('Analyzing speech:')
-    console.log('Original text:', text)
-    console.log('Transcript:', transcript)
-    
-    const originalWords = normalizeText(text)
-    const spokenWords = normalizeText(transcript)
-    
-    console.log('Original words:', originalWords)
-    console.log('Spoken words:', spokenWords)
-    
-    const correctWords: string[] = []
-    const incorrectWords: Array<{ word: string; spokenAs: string; tip: string }> = []
-    const missingWords: string[] = []
-    const extraWords: string[] = []
-    
-    // Simple comparison
-    const spokenSet = new Set(spokenWords)
-    const originalSet = new Set(originalWords)
-    
-    // Find correct and missing words
-    originalWords.forEach(word => {
-      if (spokenSet.has(word)) {
-        correctWords.push(word)
-      } else {
-        missingWords.push(word)
-      }
-    })
-    
-    // Find extra words (spoken but not in original)
-    spokenWords.forEach(word => {
-      if (!originalSet.has(word)) {
-        extraWords.push(word)
-      }
-    })
-    
-    // Calculate score
-    const score = originalWords.length > 0 
-      ? Math.round((correctWords.length / originalWords.length) * 100)
-      : 0
-
-    // Generate pronunciation tips based on missing words
-    const pronunciationTips: string[] = []
-    if (missingWords.length > 0) {
-      pronunciationTips.push(`Practice these words: ${missingWords.slice(0, 3).join(', ')}`)
-    }
-    if (extraWords.length > 0) {
-      pronunciationTips.push(`You added extra words. Try to match the original text exactly.`)
-    }
-    if (score < 70) {
-      pronunciationTips.push(`Try speaking more slowly and clearly.`)
-      pronunciationTips.push(`Listen to the text again before practicing.`)
-    }
-    if (score >= 80) {
-      pronunciationTips.push(`Great job! Keep practicing to maintain your skills.`)
-    }
-
-    // Generate feedback
-    let feedback = ''
-    if (score >= 90) {
-      feedback = `Excellent pronunciation! You said "${transcript}" which matches the original text very well.`
-    } else if (score >= 70) {
-      feedback = `Good effort! You said "${transcript}". You got most of the words right. Keep practicing the words you missed.`
-    } else if (score >= 50) {
-      feedback = `Nice try! You said "${transcript}". Focus on pronouncing each word clearly. Listen again and try to match the rhythm.`
-    } else {
-      feedback = `Keep practicing! You said "${transcript}". Try listening to the text multiple times and speaking more slowly.`
-    }
-
-    const result: AnalysisResult = {
-      score,
-      accuracy: `${score}%`,
-      correctWords,
-      incorrectWords,
-      missingWords,
-      extraWords,
-      feedback,
-      pronunciationTips
-    }
-
-    setAnalysisResult(result)
-    setCurrentStep('result')
-  }, [text])
 
   const resetPractice = () => {
     setCurrentStep('input')
