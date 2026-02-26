@@ -160,7 +160,15 @@ export default function Home() {
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const mediaRecorder = new MediaRecorder(stream)
+      
+      // Check supported MIME types
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm') 
+        ? 'audio/webm' 
+        : MediaRecorder.isTypeSupported('audio/mp4') 
+          ? 'audio/mp4' 
+          : 'audio/wav'
+      
+      const mediaRecorder = new MediaRecorder(stream, { mimeType })
       mediaRecorderRef.current = mediaRecorder
       audioChunksRef.current = []
 
@@ -172,13 +180,15 @@ export default function Home() {
 
       mediaRecorder.onstop = async () => {
         stream.getTracks().forEach(track => track.stop())
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' })
+        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType })
+        console.log('Audio blob size:', audioBlob.size, 'type:', mimeType)
         await processAudio(audioBlob)
       }
 
       mediaRecorder.start()
       setIsRecording(true)
-    } catch {
+    } catch (error) {
+      console.error('Recording error:', error)
       toast({
         title: 'Error',
         description: 'Could not access microphone. Please allow microphone access.',
@@ -197,51 +207,65 @@ export default function Home() {
 
   const processAudio = async (audioBlob: Blob) => {
     try {
-      // Convert blob to base64
-      const reader = new FileReader()
-      reader.readAsDataURL(audioBlob)
+      console.log('Processing audio...')
       
-      reader.onloadend = async () => {
-        const base64Data = reader.result as string
-        const base64Audio = base64Data.split(',')[1]
-
-        // Send to ASR API
-        const asrResponse = await fetch('/api/asr', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ audio_base64: base64Audio })
-        })
-
-        const asrResult = await asrResponse.json()
-
-        if (!asrResult.success) {
-          throw new Error(asrResult.error || 'Failed to transcribe')
+      // Convert blob to base64
+      const base64Audio = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onloadend = () => {
+          const result = reader.result as string
+          const base64 = result.split(',')[1]
+          resolve(base64)
         }
+        reader.onerror = () => reject(new Error('Failed to read audio file'))
+        reader.readAsDataURL(audioBlob)
+      })
 
-        setSpokenText(asrResult.transcription)
+      console.log('Sending to ASR API...')
 
-        // Send to compare API
-        const compareResponse = await fetch('/api/compare', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            originalText: text,
-            spokenText: asrResult.transcription
-          })
-        })
+      // Send to ASR API
+      const asrResponse = await fetch('/api/asr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audio_base64: base64Audio })
+      })
 
-        const compareResult = await compareResponse.json()
+      console.log('ASR response status:', asrResponse.status)
+      const asrResult = await asrResponse.json()
+      console.log('ASR result:', asrResult)
 
-        if (compareResult.success) {
-          setAnalysisResult(compareResult.analysis)
-          setCurrentStep('result')
-        } else {
-          throw new Error(compareResult.error || 'Failed to analyze')
-        }
-
-        setIsProcessing(false)
+      if (!asrResult.success) {
+        throw new Error(asrResult.error || 'Failed to transcribe')
       }
+
+      setSpokenText(asrResult.transcription)
+
+      console.log('Sending to Compare API...')
+
+      // Send to compare API
+      const compareResponse = await fetch('/api/compare', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          originalText: text,
+          spokenText: asrResult.transcription
+        })
+      })
+
+      console.log('Compare response status:', compareResponse.status)
+      const compareResult = await compareResponse.json()
+      console.log('Compare result:', compareResult)
+
+      if (compareResult.success) {
+        setAnalysisResult(compareResult.analysis)
+        setCurrentStep('result')
+      } else {
+        throw new Error(compareResult.error || 'Failed to analyze')
+      }
+
+      setIsProcessing(false)
     } catch (error) {
+      console.error('Process audio error:', error)
       setIsProcessing(false)
       toast({
         title: 'Error',
