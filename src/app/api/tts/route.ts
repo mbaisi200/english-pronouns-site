@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import ZAI from 'z-ai-web-dev-sdk';
+
+// Configuration from environment variables
+const ZAI_BASE_URL = process.env.ZAI_BASE_URL || '';
+const ZAI_API_KEY = process.env.ZAI_API_KEY || 'Z.ai';
 
 export async function POST(req: NextRequest) {
   try {
@@ -10,8 +13,18 @@ export async function POST(req: NextRequest) {
       textLength: text?.length, 
       voice, 
       speed,
-      textPreview: text?.substring(0, 50)
+      textPreview: text?.substring(0, 50),
+      baseUrl: ZAI_BASE_URL ? 'configured' : 'missing'
     });
+
+    // Check if base URL is configured
+    if (!ZAI_BASE_URL) {
+      console.error('TTS API Error: ZAI_BASE_URL not configured');
+      return NextResponse.json(
+        { error: 'Server configuration error: ZAI_BASE_URL not set', success: false },
+        { status: 500 }
+      );
+    }
 
     // Validate input
     if (!text || typeof text !== 'string' || text.trim().length === 0) {
@@ -22,32 +35,39 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Limit text length (SDK max is 1024)
+    // Limit text length
     const trimmedText = text.trim().slice(0, 1000);
-
-    // Validate speed range
     const validSpeed = Math.max(0.5, Math.min(2.0, Number(speed) || 1.0));
 
-    console.log('TTS: Creating ZAI instance...');
+    console.log('TTS: Calling API directly...');
     
-    // Create ZAI instance
-    const zai = await ZAI.create();
-
-    console.log('TTS: Calling TTS API...');
-    
-    // Generate TTS audio
-    const response = await zai.audio.tts.create({
-      input: trimmedText,
-      voice: voice,
-      speed: validSpeed,
-      response_format: 'wav',
-      stream: false,
+    // Call TTS API directly
+    const response = await fetch(`${ZAI_BASE_URL}/audio/tts`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${ZAI_API_KEY}`,
+        'X-Z-AI-From': 'Z',
+      },
+      body: JSON.stringify({
+        input: trimmedText,
+        voice: voice,
+        speed: validSpeed,
+        response_format: 'wav',
+        stream: false,
+      }),
     });
 
-    console.log('TTS: Response received, type:', typeof response);
-    console.log('TTS: Response headers:', response?.headers ? 'present' : 'missing');
+    if (!response.ok) {
+      const errorBody = await response.text();
+      console.error('TTS API Error:', response.status, errorBody);
+      return NextResponse.json(
+        { error: `TTS API failed: ${response.status}`, success: false },
+        { status: response.status }
+      );
+    }
 
-    // Get array buffer from Response object
+    // Get audio data
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(new Uint8Array(arrayBuffer));
     
@@ -80,7 +100,6 @@ export async function POST(req: NextRequest) {
       {
         error: errorMessage,
         success: false,
-        details: error instanceof Error ? error.stack : undefined
       },
       { status: 500 }
     );
