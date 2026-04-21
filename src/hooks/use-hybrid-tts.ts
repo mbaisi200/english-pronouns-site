@@ -38,6 +38,25 @@ export const useHybridTTS = (): UseHybridTTSHook => {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
 
+  // Server-TTS proxy (optional)
+  const playServerTTS = useCallback(async (text: string, language: string = 'en-US') => {
+    const url = (process.env.NEXT_PUBLIC_SERVER_TTS_URL || '/api/tts')
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, language })
+    })
+    if (!resp.ok) {
+      const err = await resp.text()
+      throw new Error(err || 'Server TTS failed')
+    }
+    const blob = await resp.blob()
+    const blobUrl = URL.createObjectURL(blob)
+    const audio = new Audio(blobUrl)
+    await audio.play()
+    URL.revokeObjectURL(blobUrl)
+  }, [])
+
   // Initialize
   useEffect(() => {
     const detectedPlatform = detectPlatform()
@@ -219,7 +238,17 @@ export const useHybridTTS = (): UseHybridTTSHook => {
 
     console.log('TTS: speak() called, method:', method, 'voicesLoaded:', voicesLoaded)
 
-    // Always try Web Speech API first
+    // If configured to use Server-TTS, try that first
+    if (method === 'server-tts') {
+      try {
+        await playServerTTS(trimmedText, 'en-US')
+        return
+      } catch (err) {
+        console.error('Server TTS failed, falling back to Web Speech', err)
+      }
+    }
+
+    // Fall back to Web Speech API
     if (synthRef.current && voicesRef.current.length > 0) {
       console.log('TTS: Using Web Speech API')
       try {
