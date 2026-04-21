@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { findBestVoice } from '../lib/voice-manager'
 
 export interface SpeechSynthesisOptions {
   text: string
@@ -101,10 +102,21 @@ export const useSpeechSynthesis = (): UseSpeechSynthesisReturn => {
       if (options.voice) {
         utteranceRef.current.voice = options.voice
         utteranceRef.current.lang = options.voice.lang
-      } else if (options.lang) {
-        utteranceRef.current.lang = options.lang
       } else {
-        utteranceRef.current.lang = 'en-US'
+        // Prefer US English voice when available; fallback to English
+        const defaultVoice =
+          // Try to get a US English voice (first, female, then male possibilities)
+          findBestVoice(voices, 'female', 'en-US') ?? findBestVoice(voices, 'male', 'en-US') ??
+          // Final fallback: any English voice
+          voices.find(v => v.lang.toLowerCase().startsWith('en'))
+        if (defaultVoice) {
+          utteranceRef.current.voice = defaultVoice
+          utteranceRef.current.lang = defaultVoice.lang
+        } else if (options.lang) {
+          utteranceRef.current.lang = options.lang
+        } else {
+          utteranceRef.current.lang = 'en-US'
+        }
       }
 
       utteranceRef.current.rate = Math.max(0.1, Math.min(10, options.rate || 1.0))

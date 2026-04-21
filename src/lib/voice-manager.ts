@@ -321,13 +321,17 @@ const FEMALE_VOICE_KEYWORDS = [
 export const findBestVoice = (
   voices: SpeechSynthesisVoice[],
   gender: 'male' | 'female',
-  preferredLanguage: string = 'en'
+  preferredLanguage: string = 'en-US'
 ): SpeechSynthesisVoice | null => {
   if (voices.length === 0) return null
-
-  // Filtrar vozes no idioma preferido
-  const preferredVoices = voices.filter(v => v.lang.startsWith(preferredLanguage))
-  const searchVoices = preferredVoices.length > 0 ? preferredVoices : voices
+  // Priorizar vozes en-US quando disponível; caso contrário, usar o idioma informado
+  const enUSVoices = voices.filter(v => v.lang.toLowerCase().startsWith('en-us'))
+  const searchVoices = enUSVoices.length > 0
+    ? enUSVoices
+    : voices.filter(v => v.lang.toLowerCase().startsWith(preferredLanguage.toLowerCase()))
+      .length > 0
+      ? voices.filter(v => v.lang.toLowerCase().startsWith(preferredLanguage.toLowerCase()))
+      : voices
 
   const keywords = gender === 'male' ? MALE_VOICE_KEYWORDS : FEMALE_VOICE_KEYWORDS
 
@@ -357,7 +361,10 @@ export const findBestVoice = (
 export const getEnglishVoices = (
   voices: SpeechSynthesisVoice[]
 ): SpeechSynthesisVoice[] => {
-  return voices.filter(v => v.lang.startsWith('en'))
+  // Priorizar vozes en-US; se não houver, retornar vozes em inglês normalmente
+  const enUS = voices.filter(v => v.lang.toLowerCase().startsWith('en-us'))
+  if (enUS.length > 0) return enUS
+  return voices.filter(v => v.lang.toLowerCase().startsWith('en'))
 }
 
 /**
